@@ -1,6 +1,10 @@
 import { Probot } from "probot";
+import manualTrigger from "./manualTrigger.js";
 
-export default (app: Probot) => {
+export default (app: Probot, options: any) => {
+  // Load manual trigger routes for external API access
+  manualTrigger(app, options);
+
   app.on("pull_request.opened", async (context) => {
     const issueComment = context.issue({
       body: "Thanks for opening this PR! A bot will review your code shortly!",
