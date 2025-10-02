@@ -8,10 +8,7 @@ export default (app: Probot) => {
 
         if (!authorizedOwners.includes(owner)) {
             console.log(`Unauthorized owner: ${owner}`);
-            await context.octokit.issues.createComment({
-                ...context.issue(),
-                body: `Thanks ${owner}, you are not verified!.`,
-            });
+            await axios
             return;
         }
     });
