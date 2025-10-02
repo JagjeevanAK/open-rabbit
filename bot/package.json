@@ -13,8 +13,11 @@
   ],
   "scripts": {
     "build": "tsc",
+    "dev": "npm run build && npm start",
     "start": "probot run ./lib/index.js",
-    "test": "vitest"
+    "test": "vitest",
+    "clean": "rm -rf lib",
+    "rebuild": "npm run clean && npm run build"
   },
   "dependencies": {
     "probot": "^13.4.5"
