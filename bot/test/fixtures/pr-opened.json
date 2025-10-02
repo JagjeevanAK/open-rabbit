@@ -1,0 +1,28 @@
+{
+    "action": "opened",
+    "number": 1,
+    "pull_request": {
+        "number": 32,
+        "state": "open",
+        "title": "Test PR",
+        "user": {
+            "login": "octocat"
+        },
+        "head": {
+            "sha": "abc123"
+        },
+        "base": {
+            "sha": "def456"
+        }
+    },
+    "repository": {
+        "name": "documentation",
+        "full_name": "openfoodfacts/documentation",
+        "owner": {
+            "login": "openfoodfacts"
+        }
+    },
+    "sender": {
+        "login": "octocat"
+    }
+}
