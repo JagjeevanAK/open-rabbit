@@ -41,6 +41,7 @@ class AnalysisPipeline:
         self.ast_tree = None
         self.cfg = None
         self.pdg = None
+        self.source_code: Optional[bytes] = None  # Store source code for CFG/PDG
     
     @staticmethod
     def detect_language_from_file(file_path: str) -> str:
@@ -89,6 +90,13 @@ class AnalysisPipeline:
             )
         
         self.language = lang  # Update pipeline language
+        
+        # Store source code
+        if isinstance(code, str):
+            self.source_code = code.encode('utf-8')
+        else:
+            self.source_code = code
+        
         self.ast_tree = parse_code(code, lang)
         return self.ast_tree
     
@@ -116,6 +124,11 @@ class AnalysisPipeline:
             self.language = language
         
         assert self.language is not None, "Language must be set"
+        
+        # Read source code
+        with open(file_path, 'rb') as f:
+            self.source_code = f.read()
+        
         self.ast_tree = parse_file(file_path, self.language)
         return self.ast_tree
     
@@ -132,8 +145,8 @@ class AnalysisPipeline:
             raise ValueError("No AST available. Call parse_code() or parse_file() first.")
         
         assert self.language is not None, "Language must be set before building CFG"
-        # Pass AST root node to CFG builder
-        self.cfg = build_cfg_from_ast(self.ast_tree.root_node, self.language)
+        # Pass AST root node and source code to CFG builder
+        self.cfg = build_cfg_from_ast(self.ast_tree.root_node, self.language, self.source_code)
         return self.cfg
     
     def build_pdg(self) -> ProgramDependenceGraph:

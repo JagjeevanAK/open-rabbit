@@ -34,6 +34,9 @@ class PDGNode:
     statement: str = ""
     ast_node: Any = None
     node_type: str = "statement"
+    start_line: Optional[int] = None  # Source line number
+    end_line: Optional[int] = None
+    code_snippet: str = ""  # Source code snippet
     
     # Dependencies
     data_dependencies: List[int] = field(default_factory=list)  # Nodes this depends on (data)
@@ -60,6 +63,9 @@ class PDGNode:
             "block_id": self.block_id,
             "statement": self.statement[:100],  # Truncate long statements
             "node_type": self.node_type,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "code_snippet": self.code_snippet[:200],  # Max 200 chars for AI readability
             "defines": list(self.defines),
             "uses": list(self.uses),
             "data_dependencies": self.data_dependencies,
@@ -76,6 +82,7 @@ class ProgramDependenceGraph:
         self.variables: Dict[str, Variable] = {}
         self.entry_node_id: Optional[int] = None
         self.next_node_id = 0
+        self.reaching_defs: Dict[int, Dict[str, Set[int]]] = {}  # node_id -> {var -> set of def nodes}
         
     def create_node(self, statement: str = "", node_type: str = "statement") -> PDGNode:
         """Create a new PDG node"""
@@ -91,11 +98,98 @@ class ProgramDependenceGraph:
             self.variables[key] = Variable(name=name, scope=scope)
         return self.variables[key]
     
+    def compute_reaching_definitions(self, cfg: 'ControlFlowGraph'):
+        """
+        Compute reaching definitions using iterative dataflow analysis.
+        
+        For each program point, determine which definitions of each variable
+        can reach that point along some path.
+        
+        Uses standard forward dataflow algorithm:
+        - gen[B] = variables defined in block B
+        - kill[B] = definitions of same variables killed by B
+        - in[B] = union of out[P] for all predecessors P
+        - out[B] = gen[B] ∪ (in[B] - kill[B])
+        """
+        from cfg.cfg_builder import ControlFlowGraph, BasicBlock
+        
+        # Initialize reaching definitions for each block
+        reaching_in: Dict[int, Dict[str, Set[int]]] = {}
+        reaching_out: Dict[int, Dict[str, Set[int]]] = {}
+        
+        # Get all blocks and initialize
+        for block_id in cfg.blocks.keys():
+            reaching_in[block_id] = {}
+            reaching_out[block_id] = {}
+        
+        # Compute gen and kill sets for each block
+        gen: Dict[int, Dict[str, int]] = {}  # block -> {var -> def_node}
+        
+        for block_id, pdg_node in self.nodes.items():
+            if pdg_node.block_id is not None:
+                gen[pdg_node.block_id] = {}
+                for var in pdg_node.defines:
+                    gen[pdg_node.block_id][var] = pdg_node.id
+        
+        # Iterative dataflow analysis
+        changed = True
+        max_iterations = len(cfg.blocks) * 3
+        iteration = 0
+        
+        while changed and iteration < max_iterations:
+            changed = False
+            iteration += 1
+            
+            for block_id, block in cfg.blocks.items():
+                # in[B] = union of out[P] for all predecessors
+                new_in: Dict[str, Set[int]] = {}
+                
+                for pred_id in block.predecessors:
+                    if pred_id in reaching_out:
+                        for var, defs in reaching_out[pred_id].items():
+                            if var not in new_in:
+                                new_in[var] = set()
+                            new_in[var].update(defs)
+                
+                if new_in != reaching_in[block_id]:
+                    reaching_in[block_id] = new_in
+                    changed = True
+                
+                # out[B] = gen[B] ∪ (in[B] - kill[B])
+                new_out = {var: defs.copy() for var, defs in new_in.items()}
+                
+                # Apply gen (overwrite with new definitions)
+                if block_id in gen:
+                    for var, def_node in gen[block_id].items():
+                        new_out[var] = {def_node}
+                
+                if new_out != reaching_out[block_id]:
+                    reaching_out[block_id] = new_out
+                    changed = True
+        
+        # Store reaching definitions for PDG nodes
+        for node_id, pdg_node in self.nodes.items():
+            if pdg_node.block_id is not None and pdg_node.block_id in reaching_in:
+                self.reaching_defs[node_id] = reaching_in[pdg_node.block_id].copy()
+    
     def get_reaching_definitions(self, variable: str, at_node: int) -> List[int]:
         """Get all definitions of a variable that reach a given node"""
-        var_key = f"global:{variable}"  # Simplified: assume global scope
+        if at_node in self.reaching_defs:
+            var_key_global = f"global:{variable}"
+            
+            # Check reaching defs computed by dataflow
+            if variable in self.reaching_defs[at_node]:
+                return list(self.reaching_defs[at_node][variable])
+            
+            # Fallback: check variable's definition list
+            if var_key_global in self.variables:
+                return self.variables[var_key_global].definition_nodes
+        
+        # Fallback to global definitions
+        var_key = f"global:{variable}"
         if var_key in self.variables:
             return self.variables[var_key].definition_nodes
+        
         return []
     
     def to_dict(self) -> Dict:
@@ -165,7 +259,7 @@ class PDGBuilder:
         return self.pdg
         
     def build(self) -> ProgramDependenceGraph:
-        """Build PDG from CFG"""
+        """Build PDG from CFG with enhanced control and data dependency analysis"""
         pdg = ProgramDependenceGraph(name=self.cfg.name)
         self.pdg = pdg
         
@@ -178,20 +272,28 @@ class PDGBuilder:
             pdg_node = self._create_pdg_node_from_block(block)
             self.block_to_node[block_id] = pdg_node.id
         
-        # Compute control dependencies
+        # Compute reaching definitions using dataflow analysis
+        pdg.compute_reaching_definitions(self.cfg)
+        
+        # Compute control dependencies using post-dominance
         self._compute_control_dependencies()
         
-        # Compute data dependencies
+        # Compute data dependencies using reaching definitions
         self._compute_data_dependencies()
         
         return pdg
     
     def _create_pdg_node_from_block(self, block: BasicBlock) -> PDGNode:
-        """Create PDG node from CFG block"""
+        """Create PDG node from CFG block with line numbers and code snippets"""
         statement = " ".join(block.statements) if block.statements else f"Block {block.id}"
         pdg = self._require_pdg()
         node = pdg.create_node(statement=statement, node_type=block.type.value)
         node.block_id = block.id
+        
+        # Copy line numbers and code snippet from CFG block
+        node.start_line = block.start_line
+        node.end_line = block.end_line
+        node.code_snippet = block.code_snippet
         
         # Extract variables defined and used
         for ast_node in block.ast_nodes:
@@ -282,50 +384,41 @@ class PDGBuilder:
         for child in ast_node.children:
             self._extract_uses(child, pdg_node, visited)
     def _compute_control_dependencies(self):
-        """Compute control dependencies using post-dominance"""
-        # Simplified control dependency computation
-        # A node Y is control dependent on X if:
-        # 1. There exists a path from X to Y
-        # 2. Y post-dominates all successors of X except for one
+        """
+        Compute control dependencies using post-dominance from CFG.
         
-        # For simplicity, we use a heuristic:
-        # If a block is in a conditional branch, it depends on the condition
+        A node Y is control-dependent on X if:
+        1. There exists a path from X to Y
+        2. Y post-dominates one (but not all) successors of X
         
+        Uses the CFG's post-dominance analysis.
+        """
         pdg = self._require_pdg()
         
-        # Find all conditional blocks and make their successors depend on them
-        for block_id, block in self.cfg.blocks.items():
-            if block_id not in self.block_to_node:
-                continue
-            
-            # If this is a condition block, its successors are control dependent on it
-            if block.type == BlockType.CONDITION:
-                cond_node_id = self.block_to_node[block_id]
+        # Get control dependencies from CFG
+        control_deps = self.cfg.get_control_dependencies()
+        
+        # Map control dependencies from CFG blocks to PDG nodes
+        for y_block_id, x_block_ids in control_deps.items():
+            if y_block_id in self.block_to_node:
+                y_node_id = self.block_to_node[y_block_id]
+                y_node = pdg.nodes.get(y_node_id)
                 
-                for succ_id in block.successors:
-                    if succ_id in self.block_to_node:
-                        succ_node_id = self.block_to_node[succ_id]
-                        succ_node = pdg.nodes.get(succ_node_id)
-                        if succ_node is not None:
-                            succ_node.add_control_dependency(cond_node_id)
-            
-            # Loop bodies are control dependent on loop headers
-            elif block.type == BlockType.LOOP_HEADER:
-                loop_header_id = self.block_to_node[block_id]
-                
-                for succ_id in block.successors:
-                    if succ_id in self.block_to_node:
-                        succ_block = self.cfg.blocks.get(succ_id)
-                        # Only loop body is control dependent, not the exit
-                        if succ_block and succ_block.type == BlockType.LOOP_BODY:
-                            succ_node_id = self.block_to_node[succ_id]
-                            succ_node = pdg.nodes.get(succ_node_id)
-                            if succ_node is not None:
-                                succ_node.add_control_dependency(loop_header_id)
-            
+                if y_node is not None:
+                    for x_block_id in x_block_ids:
+                        if x_block_id in self.block_to_node:
+                            x_node_id = self.block_to_node[x_block_id]
+                            y_node.add_control_dependency(x_node_id)
+    
     def _compute_data_dependencies(self):
-        """Compute data dependencies using reaching definitions"""
+        """
+        Compute data dependencies using reaching definitions.
+        
+        For each variable USE, find the reaching DEF using dataflow analysis.
+        Creates def-use chains with statement-level granularity.
+        """
         pdg = self._require_pdg()
+        
         # For each node that uses a variable
         for node_id, node in pdg.nodes.items():
             for var_used in node.uses:

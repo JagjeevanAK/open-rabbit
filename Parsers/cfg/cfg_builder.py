@@ -30,6 +30,9 @@ class BasicBlock:
     predecessors: List[int] = field(default_factory=list)
     ast_nodes: List[Any] = field(default_factory=list)
     source_range: Optional[tuple] = None  # (start_line, end_line)
+    start_line: Optional[int] = None  # Source line number where block starts
+    end_line: Optional[int] = None    # Source line number where block ends
+    code_snippet: str = ""            # Actual source code snippet (max 200 chars)
     
     def add_successor(self, block_id: int):
         """Add a successor block"""
@@ -49,7 +52,10 @@ class BasicBlock:
             "statements": [str(stmt) for stmt in self.statements],
             "successors": self.successors,
             "predecessors": self.predecessors,
-            "source_range": self.source_range
+            "source_range": self.source_range,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "code_snippet": self.code_snippet
         }
 
 
@@ -62,6 +68,7 @@ class ControlFlowGraph:
         self.entry_block_id: Optional[int] = None
         self.exit_block_id: Optional[int] = None
         self.next_block_id = 0
+        self.post_dominators: Dict[int, Set[int]] = {}  # Post-dominance information
         
     def create_block(self, block_type: BlockType = BlockType.STATEMENT) -> BasicBlock:
         """Create a new basic block"""
@@ -88,6 +95,107 @@ class ControlFlowGraph:
                 stack.extend(self.blocks[block_id].successors)
         
         return reachable
+    
+    def compute_post_dominators(self):
+        """
+        Compute post-dominance information.
+        A node Y post-dominates X if all paths from X to EXIT go through Y.
+        Uses reverse dataflow analysis from the exit node.
+        """
+        if self.exit_block_id is None:
+            return
+        
+        # Initialize: exit post-dominates itself, all others post-dominate by all nodes
+        all_blocks = set(self.blocks.keys())
+        self.post_dominators = {}
+        
+        for block_id in all_blocks:
+            if block_id == self.exit_block_id:
+                self.post_dominators[block_id] = {block_id}
+            else:
+                self.post_dominators[block_id] = all_blocks.copy()
+        
+        # Iterate until fixpoint
+        changed = True
+        max_iterations = len(all_blocks) * 2
+        iteration = 0
+        
+        while changed and iteration < max_iterations:
+            changed = False
+            iteration += 1
+            
+            for block_id in all_blocks:
+                if block_id == self.exit_block_id:
+                    continue
+                
+                # Post-dom(X) = {X} ∪ (∩ Post-dom(successor) for all successors)
+                successors = self.blocks[block_id].successors
+                
+                if not successors:
+                    # Dead end (no successors, not exit) - post-dominated by itself
+                    new_post_dom = {block_id}
+                else:
+                    # Intersection of all successors' post-dominators
+                    new_post_dom = all_blocks.copy()
+                    for succ_id in successors:
+                        if succ_id in self.post_dominators:
+                            new_post_dom &= self.post_dominators[succ_id]
+                    
+                    # Add self
+                    new_post_dom.add(block_id)
+                
+                if new_post_dom != self.post_dominators[block_id]:
+                    self.post_dominators[block_id] = new_post_dom
+                    changed = True
+    
+    def get_control_dependencies(self) -> Dict[int, List[int]]:
+        """
+        Compute control dependencies using post-dominance.
+        
+        A node Y is control-dependent on X if:
+        1. There exists a path from X to Y
+        2. Y post-dominates one (but not all) successors of X
+        
+        Returns:
+            Dictionary mapping node_id -> list of nodes it is control-dependent on
+        """
+        if not self.post_dominators:
+            self.compute_post_dominators()
+        
+        control_deps: Dict[int, List[int]] = {bid: [] for bid in self.blocks.keys()}
+        
+        # For each block X
+        for x_id, x_block in self.blocks.items():
+            successors = x_block.successors
+            
+            if len(successors) < 2:
+                # No control dependency if only 0 or 1 successor
+                continue
+            
+            # Check each successor
+            for succ_id in successors:
+                # Find blocks that are reachable from succ_id but not post-dominated by it
+                reachable = self.get_reachable_blocks(succ_id)
+                
+                for y_id in reachable:
+                    # Y is control-dependent on X if:
+                    # - Y post-dominates succ_id
+                    # - But Y does NOT post-dominate all successors of X
+                    
+                    if succ_id in self.post_dominators and y_id in self.post_dominators[succ_id]:
+                        # Y post-dominates this successor
+                        # Check if Y post-dominates ALL successors
+                        post_dom_all = all(
+                            s_id in self.post_dominators and y_id in self.post_dominators[s_id]
+                            for s_id in successors
+                        )
+                        
+                        if not post_dom_all and y_id != x_id:
+                            # Y is control-dependent on X
+                            if x_id not in control_deps[y_id]:
+                                control_deps[y_id].append(x_id)
+        
+        return control_deps
     
     def to_dict(self) -> Dict:
         """Convert CFG to dictionary representation"""
@@ -130,9 +238,15 @@ class CFGBuilder:
         self.language = language
         self.current_cfg: Optional[ControlFlowGraph] = None
         self.current_block: Optional[BasicBlock] = None
+        self.source_code: bytes = b""  # Store source code for extracting snippets
         
-    def build(self, ast_root) -> ControlFlowGraph:
+    def build(self, ast_root, source_code: Optional[bytes] = None) -> ControlFlowGraph:
         """Build CFG from AST root node"""
+        if source_code:
+            self.source_code = source_code
+        elif hasattr(ast_root, 'text'):
+            self.source_code = ast_root.text
+        
         cfg = ControlFlowGraph(name="main")
         self.current_cfg = cfg
         
@@ -153,7 +267,34 @@ class CFGBuilder:
         for exit_block_id in exit_blocks:
             cfg.add_edge(exit_block_id, cfg.exit_block_id)
         
+        # Compute post-dominators for control dependency analysis
+        cfg.compute_post_dominators()
+        
         return cfg
+    
+    def _extract_code_snippet(self, node, max_length: int = 200) -> str:
+        """Extract code snippet from AST node"""
+        try:
+            if hasattr(node, 'text'):
+                text = node.text.decode('utf-8', errors='replace')
+                # Clean up whitespace
+                text = ' '.join(text.split())
+                if len(text) > max_length:
+                    return text[:max_length - 3] + "..."
+                return text
+        except Exception:
+            pass
+        return ""
+    
+    def _set_block_source_info(self, block: BasicBlock, node):
+        """Set source line numbers and code snippet for a block"""
+        if hasattr(node, 'start_point') and hasattr(node, 'end_point'):
+            block.start_line = node.start_point[0] + 1  # Tree-sitter uses 0-indexed lines
+            block.end_line = node.end_point[0] + 1
+            block.source_range = (block.start_line, block.end_line)
+        
+        if not block.code_snippet:
+            block.code_snippet = self._extract_code_snippet(node)
     
     def _process_node(self, node, parent_exit_blocks: Optional[List[int]] = None) -> List[int]:
         """
@@ -171,13 +312,14 @@ class CFGBuilder:
         if node_type in ['if_statement', 'if_else_statement']:
             return self._process_if_statement(node)
         
-        elif node_type in ['while_statement', 'for_statement']:
+        elif node_type in ['while_statement', 'for_statement', 'for_in_statement']:
             return self._process_loop(node)
         
         elif node_type == 'return_statement':
             return self._process_return(node)
         
-        elif node_type == 'function_definition':
+        elif node_type in ['function_definition', 'function_declaration', 'method_definition', 
+                           'arrow_function', 'function', 'function_expression']:
             return self._process_function(node)
         
         elif node_type in ['try_statement', 'with_statement']:
@@ -187,29 +329,57 @@ class CFGBuilder:
             # Break statements need special handling in loop context
             if self.current_block is not None:
                 self.current_block.ast_nodes.append(node)
+                self._set_block_source_info(self.current_block, node)
             return []  # No continuation
         
         elif node_type == 'continue_statement':
             # Continue statements need special handling in loop context
             if self.current_block is not None:
                 self.current_block.ast_nodes.append(node)
+                self._set_block_source_info(self.current_block, node)
             return []  # No continuation
         
+        # Statement-level nodes that should get their own blocks
+        elif node_type in ['expression_statement', 'assignment', 'augmented_assignment',
+                          'variable_declaration', 'lexical_declaration']:
+            return self._process_statement(node)
+        
         else:
-            # Regular statement
+            # Regular statement or container node
             if self.current_block is not None:
                 self.current_block.ast_nodes.append(node)
-                self.current_block.statements.append(node.text.decode('utf-8'))
+                stmt_text = self._extract_code_snippet(node, 100)
+                if stmt_text and stmt_text not in self.current_block.statements:
+                    self.current_block.statements.append(stmt_text)
+                self._set_block_source_info(self.current_block, node)
             
-            # Process children
-            exit_blocks = [self.current_block.id] if self.current_block else []
-            for child in node.children:
-                if child.type != 'comment':
-                    child_exits = self._process_node(child, exit_blocks)
-                    if child_exits:
-                        exit_blocks = child_exits
+            # Process children for containers
+            if node.child_count > 0:
+                exit_blocks = parent_exit_blocks
+                for child in node.children:
+                    if child.type != 'comment':
+                        child_exits = self._process_node(child, exit_blocks)
+                        if child_exits:
+                            exit_blocks = child_exits
+                return exit_blocks
             
-            return exit_blocks
+            return parent_exit_blocks
+    
+    def _process_statement(self, node) -> List[int]:
+        """Process a single statement into its own block"""
+        if self.current_cfg is None or self.current_block is None:
+            raise RuntimeError("CFG or current block is None")
+        
+        # Create a new block for this statement
+        stmt_block = self.current_cfg.create_block(BlockType.STATEMENT)
+        self.current_cfg.add_edge(self.current_block.id, stmt_block.id)
+        
+        stmt_block.ast_nodes.append(node)
+        stmt_block.statements.append(self._extract_code_snippet(node, 100))
+        self._set_block_source_info(stmt_block, node)
+        
+        self.current_block = stmt_block
+        return [stmt_block.id]
     
     def _process_if_statement(self, node) -> List[int]:
         """Process if/else statements"""
@@ -227,7 +397,7 @@ class CFGBuilder:
         for child in node.children:
             if child.type in ['condition', 'parenthesized_expression']:
                 condition = child
-            elif child.type in ['block', 'body', 'suite']:
+            elif child.type in ['block', 'body', 'suite', 'statement_block']:
                 if consequence is None:
                     consequence = child
                 else:
@@ -236,8 +406,11 @@ class CFGBuilder:
                 alternative = child
         
         if condition:
-            condition_block.statements.append(condition.text.decode('utf-8'))
+            condition_block.statements.append(self._extract_code_snippet(condition, 100))
             condition_block.ast_nodes.append(condition)
+            self._set_block_source_info(condition_block, condition)
+        else:
+            self._set_block_source_info(condition_block, node)
         
         exit_blocks = []
         
@@ -246,7 +419,10 @@ class CFGBuilder:
             then_block = self.current_cfg.create_block(BlockType.STATEMENT)
             self.current_cfg.add_edge(condition_block.id, then_block.id)
             self.current_block = then_block
-            then_exits = self._process_node(consequence)
+            self._set_block_source_info(then_block, consequence)
+            
+            # Process statements in the then branch
+            then_exits = self._process_block_body(consequence)
             exit_blocks.extend(then_exits)
         
         # Process alternative (else branch)
@@ -254,13 +430,44 @@ class CFGBuilder:
             else_block = self.current_cfg.create_block(BlockType.STATEMENT)
             self.current_cfg.add_edge(condition_block.id, else_block.id)
             self.current_block = else_block
-            else_exits = self._process_node(alternative)
+            self._set_block_source_info(else_block, alternative)
+            
+            # Process statements in the else branch
+            else_exits = self._process_block_body(alternative)
             exit_blocks.extend(else_exits)
         else:
             # No else branch, condition can fall through
             exit_blocks.append(condition_block.id)
         
         return exit_blocks
+    
+    def _process_block_body(self, node) -> List[int]:
+        """Process a block body (suite, block, etc.) statement by statement"""
+        if self.current_cfg is None or self.current_block is None:
+            raise RuntimeError("CFG or current block is None")
+        
+        # Find all statement-level children
+        statements = []
+        for child in node.children:
+            if child.type not in ['comment', '{', '}', ':', 'indent', 'dedent']:
+                statements.append(child)
+        
+        if not statements:
+            return [self.current_block.id]
+        
+        # Process each statement sequentially
+        exit_blocks = [self.current_block.id]
+        for stmt in statements:
+            # Create new block for each statement
+            stmt_exits = self._process_node(stmt, exit_blocks)
+            if stmt_exits:
+                exit_blocks = stmt_exits
+            else:
+                # Statement has no continuation (e.g., return, break)
+                exit_blocks = []
+                break
+        
+        return exit_blocks if exit_blocks else []
     
     def _process_loop(self, node) -> List[int]:
         """Process loop statements"""
@@ -275,21 +482,28 @@ class CFGBuilder:
         body = None
         
         for child in node.children:
-            if child.type in ['condition', 'parenthesized_expression', 'comparison_operator']:
+            if child.type in ['condition', 'parenthesized_expression', 'comparison_operator', 
+                             'binary_operator', 'call_expression']:
                 condition = child
-            elif child.type in ['block', 'body', 'suite']:
+            elif child.type in ['block', 'body', 'suite', 'statement_block']:
                 body = child
         
         if condition:
-            loop_header.statements.append(condition.text.decode('utf-8'))
+            loop_header.statements.append(self._extract_code_snippet(condition, 100))
             loop_header.ast_nodes.append(condition)
+            self._set_block_source_info(loop_header, condition)
+        else:
+            self._set_block_source_info(loop_header, node)
         
         # Process body
         if body:
             body_block = self.current_cfg.create_block(BlockType.LOOP_BODY)
             self.current_cfg.add_edge(loop_header.id, body_block.id)
             self.current_block = body_block
-            body_exits = self._process_node(body)
+            self._set_block_source_info(body_block, body)
+            
+            # Process statements in loop body
+            body_exits = self._process_block_body(body)
             
             # Loop back to header
             for exit_id in body_exits:
@@ -308,30 +522,47 @@ class CFGBuilder:
         return_block = self.current_cfg.create_block(BlockType.RETURN)
         self.current_cfg.add_edge(self.current_block.id, return_block.id)
         return_block.ast_nodes.append(node)
-        return_block.statements.append(node.text.decode('utf-8'))
+        return_block.statements.append(self._extract_code_snippet(node, 100))
+        self._set_block_source_info(return_block, node)
         
         # Return statements go to exit
         self.current_cfg.add_edge(return_block.id, self.current_cfg.exit_block_id)
         return []  # No continuation after return
     
     def _process_function(self, node) -> List[int]:
-        """Process function definitions"""
+        """
+        Process function definitions - CRITICAL ENHANCEMENT
+        Now decomposes function body into statement-level CFG blocks
+        """
         if self.current_cfg is None or self.current_block is None:
             raise RuntimeError("CFG or current block is None")
             
         func_block = self.current_cfg.create_block(BlockType.FUNCTION)
         self.current_cfg.add_edge(self.current_block.id, func_block.id)
-        func_block.ast_nodes.append(node)
         
-        # For now, treat function as a single block
-        # In a more sophisticated implementation, we'd build a separate CFG for each function
-        func_name = "unknown"
+        # Extract function name
+        func_name = "anonymous"
         for child in node.children:
-            if child.type == 'identifier':
-                func_name = child.text.decode('utf-8')
+            if child.type in ['identifier', 'property_identifier']:
+                func_name = child.text.decode('utf-8', errors='replace')
                 break
         
         func_block.statements.append(f"function {func_name}")
+        func_block.ast_nodes.append(node)
+        self._set_block_source_info(func_block, node)
+        
+        # Find and process function body
+        body = None
+        for child in node.children:
+            if child.type in ['block', 'body', 'suite', 'statement_block']:
+                body = child
+                break
+        
+        if body:
+            # Process function body statement by statement
+            self.current_block = func_block
+            body_exits = self._process_block_body(body)
+            return body_exits
         
         return [func_block.id]
     
@@ -342,6 +573,7 @@ class CFGBuilder:
             
         try_block = self.current_cfg.create_block(BlockType.EXCEPTION)
         self.current_cfg.add_edge(self.current_block.id, try_block.id)
+        self._set_block_source_info(try_block, node)
         
         exit_blocks = []
         
@@ -350,22 +582,26 @@ class CFGBuilder:
                 clause_block = self.current_cfg.create_block(BlockType.STATEMENT)
                 self.current_cfg.add_edge(try_block.id, clause_block.id)
                 self.current_block = clause_block
-                clause_exits = self._process_node(child)
+                self._set_block_source_info(clause_block, child)
+                
+                # Process statements in the clause
+                clause_exits = self._process_block_body(child)
                 exit_blocks.extend(clause_exits)
         
         return exit_blocks if exit_blocks else [try_block.id]
 
 
-def build_cfg_from_ast(ast_root, language: str = "python") -> ControlFlowGraph:
+def build_cfg_from_ast(ast_root, language: str = "python", source_code: Optional[bytes] = None) -> ControlFlowGraph:
     """
     Main entry point to build CFG from AST
     
     Args:
         ast_root: Root node of the tree-sitter AST
         language: Source language (python, javascript, typescript)
+        source_code: Optional source code bytes for extracting snippets
     
     Returns:
         ControlFlowGraph object
     """
     builder = CFGBuilder(language)
-    return builder.build(ast_root)
+    return builder.build(ast_root, source_code)
