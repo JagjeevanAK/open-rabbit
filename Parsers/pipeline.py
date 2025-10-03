@@ -4,79 +4,126 @@ Orchestrates the complete analysis pipeline
 """
 
 import json
-from typing import Dict, Optional, Tuple, Any, Union
+from typing import Dict, Optional, Any, Union
 from pathlib import Path
-from tree_sitter import Language, Parser
-import tree_sitter_python as tspython
-import tree_sitter_javascript as tsjavascript
-import tree_sitter_typescript as tstypescript
 
+# Import from separate modules for clean separation of concerns
+from ast_module.ast_parser import parse_code, parse_file
 from cfg.cfg_builder import build_cfg_from_ast, ControlFlowGraph
 from pdg.pdg_builder import build_pdg_from_cfg, ProgramDependenceGraph
 
-
 class AnalysisPipeline:
-    """Complete analysis pipeline for source code"""
+    """Complete analysis pipeline for source code: AST -> CFG -> PDG"""
     
-    # Language setup
-    LANGUAGES = {
-        "python": Language(tspython.language()),
-        "javascript": Language(tsjavascript.language()),
-        "typescript": Language(tstypescript.language_typescript()),
-        "tsx": Language(tstypescript.language_tsx()),
+    SUPPORTED_LANGUAGES = ["python", "javascript", "typescript", "tsx"]
+    
+    # File extension to language mapping
+    EXTENSION_MAP = {
+        '.py': 'python',
+        '.js': 'javascript',
+        '.jsx': 'javascript',  # JSX is parsed as JavaScript
+        '.ts': 'typescript',
+        '.tsx': 'tsx'
     }
     
-    def __init__(self, language: str = "python"):
+    def __init__(self, language: Optional[str] = None):
         """
         Initialize pipeline for a specific language
         
         Args:
             language: Source language (python, javascript, typescript, tsx)
+                     If None, language will be auto-detected from file extension
         """
-        if language not in self.LANGUAGES:
-            raise ValueError(f"Unsupported language: {language}. Choose from {list(self.LANGUAGES.keys())}")
+        if language is not None and language not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {language}. Choose from {self.SUPPORTED_LANGUAGES}")
         
         self.language = language
-        self.parser = Parser(self.LANGUAGES[language])
         self.ast_tree = None
         self.cfg = None
         self.pdg = None
     
-    def parse_code(self, code: Union[str, bytes]) -> Any:
+    @staticmethod
+    def detect_language_from_file(file_path: str) -> str:
         """
-        Parse source code into AST
+        Auto-detect language from file extension
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Detected language (python, javascript, typescript, tsx)
+            
+        Raises:
+            ValueError: If file extension is not supported
+        """
+        path = Path(file_path)
+        extension = path.suffix.lower()
+        
+        if extension not in AnalysisPipeline.EXTENSION_MAP:
+            raise ValueError(
+                f"Unsupported file extension: {extension}. "
+                f"Supported extensions: {', '.join(AnalysisPipeline.EXTENSION_MAP.keys())}"
+            )
+        
+        return AnalysisPipeline.EXTENSION_MAP[extension]
+    
+    def parse_code(self, code: Union[str, bytes], language: Optional[str] = None) -> Any:
+        """
+        Step 1: Parse source code into AST using ast_module
         
         Args:
             code: Source code string or bytes
+            language: Language to parse (overrides pipeline language if provided)
         
         Returns:
             AST tree object
+            
+        Raises:
+            ValueError: If no language is specified and pipeline has no language
         """
-        if isinstance(code, str):
-            source_code = code.encode('utf-8')
-        else:
-            source_code = code
+        lang = language or self.language
+        if lang is None:
+            raise ValueError(
+                "No language specified. Either provide language parameter or "
+                "initialize pipeline with a language, or use parse_file() for auto-detection."
+            )
         
-        self.ast_tree = self.parser.parse(source_code)
+        self.language = lang  # Update pipeline language
+        self.ast_tree = parse_code(code, lang)
         return self.ast_tree
     
-    def parse_file(self, file_path: str) -> Any:
+    def parse_file(self, file_path: str, language: Optional[str] = None) -> Any:
         """
-        Parse a source file into AST
+        Step 1: Parse a source file into AST using ast_module
+        Auto-detects language from file extension if not specified.
         
         Args:
-            file_path: Path to source file
+            file_path: Path to source file (.py, .js, .jsx, .ts, .tsx)
+            language: Language override (if None, auto-detects from extension)
         
         Returns:
             AST tree object
+            
+        Examples:
+            >>> pipeline = AnalysisPipeline()
+            >>> pipeline.parse_file("script.py")  # Auto-detects Python
+            >>> pipeline.parse_file("app.tsx")     # Auto-detects TSX
         """
-        with open(file_path, 'r', encoding='utf-8') as f:
-            code = f.read()
-        return self.parse_code(code)
+        # Auto-detect language from file extension if not specified
+        if language is None and self.language is None:
+            self.language = self.detect_language_from_file(file_path)
+        elif language is not None:
+            self.language = language
+        
+        assert self.language is not None, "Language must be set"
+        self.ast_tree = parse_file(file_path, self.language)
+        return self.ast_tree
     
     def build_cfg(self) -> ControlFlowGraph:
         """
-        Build Control Flow Graph from parsed AST
+        Step 2: Build Control Flow Graph from parsed AST
+        
+        Takes the AST output and creates a CFG showing program flow
         
         Returns:
             CFG object
@@ -84,12 +131,16 @@ class AnalysisPipeline:
         if self.ast_tree is None:
             raise ValueError("No AST available. Call parse_code() or parse_file() first.")
         
+        assert self.language is not None, "Language must be set before building CFG"
+        # Pass AST root node to CFG builder
         self.cfg = build_cfg_from_ast(self.ast_tree.root_node, self.language)
         return self.cfg
     
     def build_pdg(self) -> ProgramDependenceGraph:
         """
-        Build Program Dependence Graph from CFG
+        Step 3: Build Program Dependence Graph from CFG
+        
+        Takes the CFG output and creates a PDG tracking data and control dependencies
         
         Returns:
             PDG object
@@ -97,6 +148,8 @@ class AnalysisPipeline:
         if self.cfg is None:
             raise ValueError("No CFG available. Call build_cfg() first.")
         
+        assert self.language is not None, "Language must be set before building PDG"
+        # Pass CFG to PDG builder
         self.pdg = build_pdg_from_cfg(self.cfg, self.language)
         return self.pdg
     
@@ -104,26 +157,36 @@ class AnalysisPipeline:
         """
         Run the complete pipeline: AST -> CFG -> PDG
         
+        Pipeline Flow:
+        1. AST: Parse code using ast_module
+        2. CFG: Build control flow graph from AST
+        3. PDG: Build program dependence graph from CFG
+        
         Args:
             code: Source code string
         
         Returns:
             Dictionary containing all analysis results
         """
-        # Parse
+        # Step 1: Parse code to AST
         self.parse_code(code)
         
-        # Build CFG
+        # Step 2: Build CFG from AST
         self.build_cfg()
         
-        # Build PDG
+        # Step 3: Build PDG from CFG
         self.build_pdg()
         
         return self.get_results()
     
     def run_pipeline_on_file(self, file_path: str) -> Dict[str, Any]:
         """
-        Run the complete pipeline on a file
+        Run the complete pipeline on a file: AST -> CFG -> PDG
+        
+        Pipeline Flow:
+        1. AST: Parse file using ast_module
+        2. CFG: Build control flow graph from AST
+        3. PDG: Build program dependence graph from CFG
         
         Args:
             file_path: Path to source file
@@ -131,13 +194,13 @@ class AnalysisPipeline:
         Returns:
             Dictionary containing all analysis results
         """
-        # Parse
+        # Step 1: Parse file to AST
         self.parse_file(file_path)
         
-        # Build CFG
+        # Step 2: Build CFG from AST
         self.build_cfg()
         
-        # Build PDG
+        # Step 3: Build PDG from CFG
         self.build_pdg()
         
         return self.get_results()

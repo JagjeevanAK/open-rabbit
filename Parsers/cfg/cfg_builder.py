@@ -7,7 +7,6 @@ from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
-
 class BlockType(Enum):
     """Types of basic blocks in the CFG"""
     ENTRY = "entry"
