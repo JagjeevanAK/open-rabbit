@@ -1,0 +1,14 @@
+[project]
+name = "Knowledge-base"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "celery>=5.5.3",
+    "dotenv>=0.9.9",
+    "langchain>=0.3.27",
+    "langchain-openai>=0.3.34",
+    "langchain-qdrant>=0.2.1",
+    "redis>=6.4.0",
+]
