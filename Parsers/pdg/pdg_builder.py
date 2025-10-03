@@ -6,7 +6,7 @@ Builds a PDG from CFG and AST, tracking data and control dependencies
 from typing import Dict, List, Set, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-from cfg.cfg_builder import ControlFlowGraph, BasicBlock
+from cfg.cfg_builder import ControlFlowGraph, BasicBlock, BlockType
 
 class DependenceType(Enum):
     """Types of dependencies in the PDG"""
@@ -181,6 +181,9 @@ class PDGBuilder:
         # Compute control dependencies
         self._compute_control_dependencies()
         
+        # Compute data dependencies
+        self._compute_data_dependencies()
+        
         return pdg
     
     def _create_pdg_node_from_block(self, block: BasicBlock) -> PDGNode:
@@ -195,10 +198,20 @@ class PDGBuilder:
             self._extract_variables(ast_node, node)
         
         return node
-    def _extract_variables(self, ast_node, pdg_node: PDGNode):
+    def _extract_variables(self, ast_node, pdg_node: PDGNode, visited: Optional[Set[int]] = None):
         """Extract variables defined and used in an AST node"""
         if not ast_node:
             return
+        
+        # Initialize visited set on first call to prevent duplicate tracking
+        if visited is None:
+            visited = set()
+        
+        # Skip if we've already processed this node
+        node_id = id(ast_node)
+        if node_id in visited:
+            return
+        visited.add(node_id)
         
         pdg = self._require_pdg()
         node_type = ast_node.type
@@ -211,13 +224,14 @@ class PDGBuilder:
                     var_name = child.text.decode('utf-8')
                     pdg_node.defines.add(var_name)
                     var = pdg.add_variable(var_name)
-                    var.definition_nodes.append(pdg_node.id)
+                    if pdg_node.id not in var.definition_nodes:
+                        var.definition_nodes.append(pdg_node.id)
                     break
             
             # Right side is used
             for child in ast_node.children:
                 if child.type == 'expression' or child.type == 'identifier':
-                    self._extract_uses(child, pdg_node)
+                    self._extract_uses(child, pdg_node, visited)
         
         # Function parameters (definitions)
         elif node_type in ['parameters', 'parameter']:
@@ -226,7 +240,8 @@ class PDGBuilder:
                     var_name = child.text.decode('utf-8')
                     pdg_node.defines.add(var_name)
                     var = pdg.add_variable(var_name)
-                    var.definition_nodes.append(pdg_node.id)
+                    if pdg_node.id not in var.definition_nodes:
+                        var.definition_nodes.append(pdg_node.id)
         
         # Regular uses
         elif node_type == 'identifier':
@@ -235,25 +250,37 @@ class PDGBuilder:
             if var_name not in ['def', 'class', 'if', 'for', 'while', 'return']:
                 pdg_node.uses.add(var_name)
                 var = pdg.add_variable(var_name)
-                var.use_nodes.append(pdg_node.id)
+                if pdg_node.id not in var.use_nodes:
+                    var.use_nodes.append(pdg_node.id)
         
         # Recurse on children
         for child in ast_node.children:
-            self._extract_variables(child, pdg_node)
-    def _extract_uses(self, ast_node, pdg_node: PDGNode):
+            self._extract_variables(child, pdg_node, visited)
+    def _extract_uses(self, ast_node, pdg_node: PDGNode, visited: Optional[Set[int]] = None):
         """Extract variable uses from an expression"""
         if not ast_node:
             return
+        
+        # Initialize visited set on first call
+        if visited is None:
+            visited = set()
+        
+        # Skip if already processed
+        node_id = id(ast_node)
+        if node_id in visited:
+            return
+        visited.add(node_id)
         
         pdg = self._require_pdg()
         if ast_node.type == 'identifier':
             var_name = ast_node.text.decode('utf-8')
             pdg_node.uses.add(var_name)
             var = pdg.add_variable(var_name)
-            var.use_nodes.append(pdg_node.id)
+            if pdg_node.id not in var.use_nodes:
+                var.use_nodes.append(pdg_node.id)
         
         for child in ast_node.children:
-            self._extract_uses(child, pdg_node)
+            self._extract_uses(child, pdg_node, visited)
     def _compute_control_dependencies(self):
         """Compute control dependencies using post-dominance"""
         # Simplified control dependency computation
@@ -265,23 +292,36 @@ class PDGBuilder:
         # If a block is in a conditional branch, it depends on the condition
         
         pdg = self._require_pdg()
+        
+        # Find all conditional blocks and make their successors depend on them
         for block_id, block in self.cfg.blocks.items():
             if block_id not in self.block_to_node:
                 continue
             
-            pdg_node_id = self.block_to_node[block_id]
-            pdg_node = pdg.nodes[pdg_node_id]
-        # For simplicity, we use a heuristic:
-        # If a block is in a conditional branch, it depends on the condition
-        
-        for block_id, block in self.cfg.blocks.items():
-            if block_id not in self.block_to_node:
-                continue
-
-            pdg_node_id = self.block_to_node[block_id]
-            pdg_node = pdg.nodes.get(pdg_node_id)
-            if pdg_node is None:
-                continue
+            # If this is a condition block, its successors are control dependent on it
+            if block.type == BlockType.CONDITION:
+                cond_node_id = self.block_to_node[block_id]
+                
+                for succ_id in block.successors:
+                    if succ_id in self.block_to_node:
+                        succ_node_id = self.block_to_node[succ_id]
+                        succ_node = pdg.nodes.get(succ_node_id)
+                        if succ_node is not None:
+                            succ_node.add_control_dependency(cond_node_id)
+            
+            # Loop bodies are control dependent on loop headers
+            elif block.type == BlockType.LOOP_HEADER:
+                loop_header_id = self.block_to_node[block_id]
+                
+                for succ_id in block.successors:
+                    if succ_id in self.block_to_node:
+                        succ_block = self.cfg.blocks.get(succ_id)
+                        # Only loop body is control dependent, not the exit
+                        if succ_block and succ_block.type == BlockType.LOOP_BODY:
+                            succ_node_id = self.block_to_node[succ_id]
+                            succ_node = pdg.nodes.get(succ_node_id)
+                            if succ_node is not None:
+                                succ_node.add_control_dependency(loop_header_id)
             
     def _compute_data_dependencies(self):
         """Compute data dependencies using reaching definitions"""
