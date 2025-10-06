@@ -1,5 +1,5 @@
-from .database import Base
 from sqlalchemy import Column, Boolean, Integer, String
+from .database import Base
 
 class User(Base):
     __tablename__ = "users"
@@ -10,8 +10,16 @@ class User(Base):
     sub = Column(Boolean, index=True, default=False)
     org = Column(String, index=True)
     
+class NewInstall(Base):
+    __tablename__ = "new_install"
+    
+    id = Column(Integer, index=True, primary_key=True)
+    name = Column(String, index=True)
+    org = Column(String, index=True, default=None)
+
 class PullRequest(Base):
     __tablename__ = "pull_request"
+    
     id = Column(Integer, index=True, primary_key=True)
     org = Column(String, index=True)
     repo = Column(String, index=True)

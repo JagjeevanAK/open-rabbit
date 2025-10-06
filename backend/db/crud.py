@@ -7,6 +7,13 @@ def get_user(db: Session, user_name: str):
 # def get_users(db: Session, skip: int = 0, limit: int = 10):
 #     return db.query(models.User).offset(skip).limit(limit).all()
 
+def create_install(db:Session, user: schemas.UserCreate):
+    new_user = models.NewInstall(name=user.name, org=user.org)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
 def create_user(db: Session, user: schemas.UserCreate):
     db_user = models.User(name=user.name, email=user.email, org=user.org, sub=user.sub)
     db.add(db_user)
@@ -14,15 +21,15 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.refresh(db_user)
     return db_user
 
-def create_pr(db: Session, pr: schemas.PRCreate):
+def create_pr(db: Session, pr: schemas.PRBase):
     pr_data = models.PullRequest(org= pr.org, repo = pr.repo, pr_no=pr.pr_no, branch=pr.branch)
     db.add(pr_data)
     db.commit()
     db.refresh(pr_data)
     return pr_data
     
-def update_pr(db: Session, pr: schemas.PRCreate):
-    pr_data = db.query(models.PullRequest).filter(models.PullRequest.pr_no == pr.pr_no).first()
+def update_pr(db: Session, pr_no: schemas.PRBase):
+    pr_data = db.query(models.PullRequest).filter(models.PullRequest.pr_no == pr_no).first()
 
     if not pr_data:
         return None  

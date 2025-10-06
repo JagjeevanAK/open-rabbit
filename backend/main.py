@@ -1,7 +1,10 @@
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI
+from db.database import engine, Base
+from routes import available_routers
 from pydantic import BaseModel
 from typing import Optional
-from routes import available_routers
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -25,11 +28,6 @@ class PrDetails(BaseModel):
 @app.get('/')
 def root():
     return { 'msg': "Hello, World"}
-
-@app.post('/eventCollector')
-def Collector(body= PrDetails):
-    
-    return {"status": "Data recived Successfully"}
 
 @app.get('/healthz')
 def health():

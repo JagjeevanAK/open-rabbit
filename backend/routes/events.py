@@ -1,5 +1,7 @@
-from fastapi import APIRouter
-from db.crud import create_pr, update_pr
+from fastapi import APIRouter, Depends
+from db import models, crud, schemas
+from db.database import get_db
+from sqlalchemy.orm import Session
 
 router = APIRouter(
     prefix="/events",
@@ -7,9 +9,9 @@ router = APIRouter(
 )
 
 @router.post("/")
-def event():
-    pass
+def event(pr:schemas.PRBase, db: Session = Depends(get_db)):
+    return crud.create_pr(db=db, pr=pr)
 
 @router.post("/new_commits")
-def commits():
-    pass
+def commits( pr_no: schemas.PRBase, db: Session = Depends(get_db)):
+    return crud.update_pr(db=db, pr_no=pr_no)

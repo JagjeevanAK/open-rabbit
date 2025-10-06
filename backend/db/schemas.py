@@ -21,9 +21,3 @@ class PRBase(BaseModel):
     pr_no: int
     branch: str
     cnt: int
-
-class PRCreate(PRBase):
-    pass
-
-class PRupdate(PRBase):
-    pass
