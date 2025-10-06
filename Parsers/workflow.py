@@ -30,12 +30,12 @@ def load_json(path: str) -> dict:
         return json.load(f)
 
 
-def chunk_text(text: str, chunk_size: int = 5000) -> List[str]:
+def chunk_text(text: str, chunk_size: int = 20000) -> List[str]:
     """Split text into character-based chunks."""
     return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
-def summarize_chunks_for_role(llm, text: str, role_description: str, chunk_size: int = 5000) -> List[str]:
+def summarize_chunks_for_role(llm, text: str, role_description: str, chunk_size: int = 20000) -> List[str]:
     """Summarize long text in small LLM calls (chunked)."""
     if not text:
         return []
