@@ -1,11 +1,13 @@
 from fastapi import FastAPI, Query, Request
 from pydantic import BaseModel
 from typing import Optional
-from routes import demo
+from routes import available_routers
 
 app = FastAPI()
 
-app.include_router(demo.router)
+for router in available_routers:
+    app.include_router(router)
+
 
 class User(BaseModel):
     name: str

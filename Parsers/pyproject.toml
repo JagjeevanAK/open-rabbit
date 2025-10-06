@@ -9,4 +9,9 @@ dependencies = [
     "tree-sitter-python>=0.23.0",
     "tree-sitter-javascript>=0.23.0",
     "tree-sitter-typescript>=0.23.0",
+    "langchain-openai>=0.3.34",
+    "dotenv>=0.9.9",
+    "langgraph>=0.6.8",
+    "celery>=5.5.3",
+    "redis>=6.4.0",
 ]

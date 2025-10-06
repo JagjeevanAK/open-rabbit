@@ -3,6 +3,8 @@ from pydantic import BaseModel
 class UserBase(BaseModel):
     name: str
     email: str
+    org: str
+    sub: bool
 
 class UserCreate(UserBase):
     pass
