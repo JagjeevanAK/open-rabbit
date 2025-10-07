@@ -12,18 +12,14 @@ import re
 
 from src.learnings.core.config import Settings
 
-
 class LearningExtractor:
     """
     Extracts structured learnings from raw review comments using LLM.
     
     Design rationale:
-    - Uses LangChain for clean LLM abstraction and testability
     - Applies consistent prompt engineering to ensure quality extractions
     - Returns None if comment is not actionable (e.g., "lgtm", "+1")
     
-    This matches CodeRabbit's approach of distilling review feedback into
-    reusable knowledge that can inform future reviews.
     """
     
     def __init__(self, settings: Settings):

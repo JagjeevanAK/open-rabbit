@@ -1,7 +1,7 @@
 import os
 
-EXCLUDE_DIRS = {"node_modules", "__pycache__", ".git", ".venv", "dist", "build"}
-INCLUDE_EXTS = {".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".cpp", ".h"}
+EXCLUDE_DIRS = { "node_modules", "__pycache__", ".git", ".venv", "dist", "build" }
+INCLUDE_EXTS = { ".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".cpp", ".h", ".sh", ".json" }
 
 def read_project_files(base_dir: str, max_file_size: int = 100_000):
     """

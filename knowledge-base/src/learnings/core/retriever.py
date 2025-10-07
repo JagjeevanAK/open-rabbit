@@ -20,7 +20,6 @@ def get_short_file_path(learning: Learning) -> str:
         return f".../{'/'.join(parts[-2:])}"
     return learning.source.file_path
 
-
 class LearningRetriever:
     """
     High-level interface for learning retrieval and context formatting.
@@ -30,8 +29,6 @@ class LearningRetriever:
     2. Context formatting for LLM prompt injection
     3. Ranking and deduplication logic
     
-    Matches CodeRabbit's architecture by providing a clean API
-    for injecting past learnings into review prompts.
     """
     
     def __init__(self, storage: LearningStorage, settings: Settings):

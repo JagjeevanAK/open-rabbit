@@ -31,8 +31,6 @@ class LearningStorage:
     - Stores rich metadata alongside embeddings for filtering
     - Provides both semantic search and metadata filtering capabilities
     
-    This matches CodeRabbit's approach of combining vector search with
-    structured metadata for context-aware retrieval.
     """
     
     def __init__(self, settings: Settings):

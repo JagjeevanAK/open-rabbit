@@ -277,7 +277,7 @@ def main():
         test_stats()
         
         print_section("Demo Complete!")
-        print("The Learnings system is working correctly. ✅")
+        print("The Learnings system is working correctly.")
         print("\nNext steps:")
         print("  - Integrate with your review agent")
         print("  - Add to LangGraph workflow")
@@ -285,12 +285,12 @@ def main():
         print("  - Monitor with /stats endpoint")
         
     except requests.exceptions.ConnectionError:
-        print("\n❌ ERROR: Could not connect to API server.")
+        print("\nERROR: Could not connect to API server.")
         print("Make sure the FastAPI server is running:")
         print("  uvicorn main:app --reload --port 8000")
         
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
 
