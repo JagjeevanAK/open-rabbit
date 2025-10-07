@@ -1,24 +1,13 @@
 import { Probot } from "probot";
 import manualTrigger from "./manualComment.js";
+import enhancedPullRequest from "./enhancedPullRequest.js";
 
 export default (app: Probot, options: any) => {
   // Load manual trigger routes for external API access
   manualTrigger(app, options);
 
-  app.on("pull_request.opened", async (context) => {
-    const issueComment = context.issue({
-      body: "Thanks for opening this PR! A bot will review your code shortly!",
-    });
-    await context.octokit.issues.createComment(issueComment);
-  });
-
-  app.on("pull_request.synchronize", async (context) => {
-    const prComment = context.issue({
-      body: " New commits detected! The bot will re-check your changes.",
-    });
-
-    await context.octokit.issues.createComment(prComment);
-  });
+  // Load enhanced PR handler with knowledge base integration
+  enhancedPullRequest(app);
 
   // For more information on building apps:
   // https://probot.github.io/docs/

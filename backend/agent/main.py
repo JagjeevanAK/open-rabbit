@@ -7,6 +7,13 @@ from langchain_core.tools import tool
 
 from dotenv import load_dotenv
 
+# Import knowledge base tools
+from agent.tools.knowledgeBase import (
+    search_knowledge_base,
+    get_pr_learnings,
+    format_review_context
+)
+
 load_dotenv()
 
 class AgentState(TypedDict):
@@ -14,19 +21,48 @@ class AgentState(TypedDict):
     
 graph = StateGraph(AgentState)
 
-llm = ChatOpenAI(model="gpt-5")
+# Bind tools to the LLM
+tools = [search_knowledge_base, get_pr_learnings, format_review_context]
+llm = ChatOpenAI(model="gpt-4o").bind_tools(tools)
 
 systemPrompt = SystemMessage(
     content="""
-    Hey you are a code reviewing agent which help's and suggest users the better practices to be followed on the pull request and code suggewstion as this prompt consiste 3 
-    section where you will be given the knowledge graph aka the human feedback where there will accepted user suggestions and and not accepted user suggestions and comment left
-    by the user on the suggestions
+    You are an expert code reviewing agent that helps developers follow best practices and improve code quality.
     
-    2nd section will consist of the analysis of the AST (Abstract Syantx tree) and CFG (Control flow graph) and PDG (program depndency graph) so agent will give the review of 
-    thoses output files to give the context of it 
+    Your review process consists of 3 enriched sections:
     
-    and 3rd section will the code it self where there will be the code file and diff of that file where code was change in that file so that will help you to understand what things
-    were changed and on what we have to make review
+    1. **Knowledge Base Context** (Human Feedback & Learnings):
+       - Use the knowledge base tools to retrieve relevant learnings from past code reviews
+       - Access accepted/rejected suggestions and user comments from previous PRs
+       - Apply project-specific patterns and best practices learned from history
+       - Use search_knowledge_base() to find topic-specific learnings
+       - Use get_pr_learnings() to get context specific to this PR
+    
+    2. **Static Analysis Context** (AST, CFG, PDG):
+       - Review Abstract Syntax Tree (AST) analysis outputs
+       - Examine Control Flow Graph (CFG) for logic flow issues
+       - Analyze Program Dependency Graph (PDG) for dependencies and potential issues
+       - Use these analyses to identify deeper code quality concerns
+    
+    3. **Code Changes Context** (Files & Diffs):
+       - Review the actual code files and their diffs
+       - Understand what changed and why
+       - Provide specific, actionable feedback on the changes
+    
+    **Your Responsibilities**:
+    - Always check the knowledge base first for relevant project learnings
+    - Provide constructive, specific feedback with examples
+    - Reference past learnings when they apply to current changes
+    - Ensure consistency with previously accepted patterns
+    - Flag deviations from established project practices
+    - Suggest improvements based on historical feedback
+    
+    **Tools Available**:
+    - search_knowledge_base: Search for topic-specific learnings
+    - get_pr_learnings: Get learnings specific to this PR's context
+    - format_review_context: Generate comprehensive review context
+    
+    Start each review by gathering relevant knowledge base context!
 """)
 
 def get_file(state: AgentState) -> AgentState:
