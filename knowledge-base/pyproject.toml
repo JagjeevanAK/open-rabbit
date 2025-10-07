@@ -1,14 +1,28 @@
 [project]
 name = "Knowledge-base"
 version = "0.1.0"
-description = "Add your description here"
+description = "CodeRabbit-inspired learnings ingestion and retrieval system"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "celery>=5.5.3",
-    "dotenv>=0.9.9",
+    "python-dotenv>=1.0.0",
     "langchain>=0.3.27",
     "langchain-openai>=0.3.34",
     "langchain-qdrant>=0.2.1",
     "redis>=6.4.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "qdrant-client>=1.12.0",
+    "openai>=1.55.0",
+    "langgraph>=0.6.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
 ]
