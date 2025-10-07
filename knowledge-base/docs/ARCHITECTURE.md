@@ -8,31 +8,31 @@ The Learnings system is designed to extract, store, and retrieve project-specifi
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Review System (External)                     │
-│                 (GitHub, GitLab, Review Agent)                   │
+│                     Review System (External)                    │
+│                 (GitHub, GitLab, Review Agent)                  │
 └─────────────────────┬───────────────────────────────────────────┘
                       │
                       │ Review Comment Payload
                       ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      FastAPI REST API                            │
-│                     (routes.py / main.py)                        │
+│                      FastAPI REST API                           │
+│                     (routes.py / main.py)                       │
 ├─────────────────────────────────────────────────────────────────┤
 │  POST /learnings/ingest         │  GET /learnings/search        │
 │  POST /learnings/pr-context     │  GET /learnings/{id}          │
 │  POST /learnings/format-context │  GET /health, /stats          │
 └─────────┬───────────────────────┴───────────────────────────────┘
-          │                                    ▲
-          │ Queue Task                         │ Query
-          ▼                                    │
+          │                                   ▲
+          │ Queue Task                        │ Query
+          ▼                                   │
 ┌─────────────────────────┐        ┌──────────┴──────────────────┐
 │   Redis (Celery)        │        │  Retriever (retriever.py)   │
 │   - Task Queue          │        │  - Semantic Search          │
 │   - Result Backend      │        │  - Context Formatting       │
 └─────────┬───────────────┘        │  - Ranking Logic            │
-          │                        └──────────┬──────────────────┘
-          │ Consume Task                      │
-          ▼                                   │
+          │                        └─────────┬──────────────────┘
+          │ Consume Task                     │
+          ▼                                  │
 ┌─────────────────────────┐                  │
 │  Celery Worker          │                  │
 │  (ingestor.py)          │                  │

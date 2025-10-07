@@ -1,5 +1,5 @@
 import { Probot } from "probot";
-import manualTrigger from "./manualTrigger.js";
+import manualTrigger from "./manualComment.js";
 
 export default (app: Probot, options: any) => {
   // Load manual trigger routes for external API access
