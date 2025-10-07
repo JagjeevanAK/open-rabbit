@@ -15,6 +15,12 @@ class UserResponse(UserBase):
     class Config:
         orm_mode = True
 
+class ChangedFileReq(BaseModel):
+    changedFiles: list
+    pr_no: int
+    owner: str
+    repo: str
+
 class PRBase(BaseModel):
     org: str
     repo: str

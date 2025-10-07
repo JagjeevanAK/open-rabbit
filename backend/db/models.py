@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Boolean, Integer, String
+from sqlalchemy import Column, Boolean, Integer, String, ARRAY
 from .database import Base
 
 class User(Base):
@@ -26,3 +26,4 @@ class PullRequest(Base):
     pr_no = Column(Integer, index=True)
     branch = Column(String, index=True)
     cnt = Column(Integer, index=True, default=1)
+    changed_files= Column(ARRAY, default=None)

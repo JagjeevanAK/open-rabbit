@@ -38,3 +38,13 @@ def update_pr(db: Session, pr_no: schemas.PRBase):
     db.commit()
     db.refresh(pr_data)
     return pr_data
+
+def insert_files(db: Session, payload: schemas.ChangedFileReq):
+    files_data = db.query(models.PullRequest).filter(models.PullRequest.pr_no == payload.pr_no).first()
+    
+    if not files_data:
+        return None  
+    
+    setattr(files_data, 'changed_files', payload.changedFiles)
+    db.commit()
+    db.refresh(files_data)
