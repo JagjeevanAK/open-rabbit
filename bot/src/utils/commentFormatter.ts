@@ -1,15 +1,5 @@
-/**
- * GitHub Comment Utilities
- * 
- * Helper functions for formatting and extracting information from GitHub comments
- * to integrate with the knowledge base
- */
-
 import { Learning } from "../services/knowledgeBase.js";
 
-/**
- * Format learnings as a GitHub comment with rich formatting
- */
 export function formatLearningsAsComment(
   learnings: Learning[],
   options?: {
@@ -24,7 +14,7 @@ export function formatLearningsAsComment(
   }
 
   const {
-    title = "📚 Relevant Project Learnings",
+    title = "Relevant Project Learnings",
     maxLearnings = 5,
     includeConfidence = true,
     includeSource = false,
@@ -62,9 +52,6 @@ export function formatLearningsAsComment(
   return comment;
 }
 
-/**
- * Format learnings as inline review comments
- */
 export function formatLearningsAsReviewComments(
   learnings: Learning[]
 ): string {
@@ -90,9 +77,6 @@ export function formatLearningsAsReviewComments(
   return comment;
 }
 
-/**
- * Create a suggestion comment with code snippet
- */
 export function createSuggestionComment(
   learning: Learning,
   originalCode: string,
@@ -114,9 +98,6 @@ export function createSuggestionComment(
   return comment;
 }
 
-/**
- * Extract code snippet from PR file patch
- */
 export function extractCodeSnippetFromPatch(
   patch: string,
   maxLines: number = 10
@@ -130,9 +111,6 @@ export function extractCodeSnippetFromPatch(
   return codeLines.join("\n");
 }
 
-/**
- * Parse GitHub suggestion format from comment
- */
 export function parseSuggestionFromComment(comment: string): {
   hasSuggestion: boolean;
   originalText?: string;
@@ -150,9 +128,6 @@ export function parseSuggestionFromComment(comment: string): {
   return { hasSuggestion: false };
 }
 
-/**
- * Categorize learning by type
- */
 export function categorizeLearning(learning: Learning): string {
   const text = learning.learning_text.toLowerCase();
 
@@ -183,9 +158,6 @@ export function categorizeLearning(learning: Learning): string {
   }
 }
 
-/**
- * Group learnings by category
- */
 export function groupLearningsByCategory(learnings: Learning[]): {
   [category: string]: Learning[];
 } {
@@ -202,9 +174,6 @@ export function groupLearningsByCategory(learnings: Learning[]): {
   );
 }
 
-/**
- * Format learnings grouped by category
- */
 export function formatGroupedLearnings(
   learnings: Learning[],
   maxPerCategory: number = 3
@@ -251,9 +220,6 @@ export function formatGroupedLearnings(
   return comment;
 }
 
-/**
- * Create a learning summary for PR description
- */
 export function createLearningSummary(learnings: Learning[]): string {
   if (learnings.length === 0) {
     return "No relevant learnings found for this PR.";
@@ -269,9 +235,6 @@ export function createLearningSummary(learnings: Learning[]): string {
   return summary;
 }
 
-/**
- * Check if a comment is actionable (requires developer response)
- */
 export function isActionableComment(comment: string): boolean {
   const actionableKeywords = [
     "please",
@@ -292,9 +255,6 @@ export function isActionableComment(comment: string): boolean {
   return actionableKeywords.some((keyword) => lowerComment.includes(keyword));
 }
 
-/**
- * Extract sentiment from comment (positive, neutral, negative)
- */
 export function extractSentiment(
   comment: string
 ): "positive" | "neutral" | "negative" {
@@ -336,9 +296,6 @@ export function extractSentiment(
   return "neutral";
 }
 
-/**
- * Format a response with learnings for a specific question
- */
 export function formatResponseWithLearnings(
   question: string,
   answer: string,

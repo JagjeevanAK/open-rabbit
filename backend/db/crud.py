@@ -4,6 +4,14 @@ from . import models, schemas
 def get_user(db: Session, user_name: str):
     return db.query(models.User).filter(models.User.name == user_name).first()
 
+def check_owner_exists(db: Session, owner_name: str):
+    """Check if owner exists in either User or NewInstall table"""
+    user_exists = db.query(models.User).filter(models.User.name == owner_name).first()
+    if user_exists:
+        return True
+    install_exists = db.query(models.NewInstall).filter(models.NewInstall.name == owner_name).first()
+    return install_exists is not None
+
 # def get_users(db: Session, skip: int = 0, limit: int = 10):
 #     return db.query(models.User).offset(skip).limit(limit).all()
 

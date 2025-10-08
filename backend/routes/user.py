@@ -25,3 +25,9 @@ async def signin(body: schemas.UserCreate, db: Session = Depends(get_db)):
 def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = crud.create_user(db, user=user)
     return db_user
+
+@router.get("/check-owner/{owner_name}")
+def check_owner(owner_name: str, db: Session = Depends(get_db)):
+    """Check if owner exists in database"""
+    exists = crud.check_owner_exists(db, owner_name=owner_name)
+    return {"owner": owner_name, "authorized": exists}
