@@ -6,15 +6,11 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMe
 from langchain_core.tools import tool
 from systemPrompt import systemPrompt
 from dotenv import load_dotenv
-
-# Import knowledge base tools
 from agent.tools.knowledgeBase import (
     search_knowledge_base,
     get_pr_learnings,
     format_review_context
 )
-
-# Import parser tools
 from agent.tools.Parsers import (
     parse_code_file,
     analyze_changed_files,
@@ -28,17 +24,15 @@ class AgentState(TypedDict):
     
 graph = StateGraph(AgentState)
 
-# Bind tools to the LLM
 tools = [
-    # Knowledge base tools
     search_knowledge_base,
     get_pr_learnings,
     format_review_context,
-    # Parser tools
     parse_code_file,
     analyze_changed_files,
     get_parser_capabilities
 ]
+
 llm = ChatOpenAI(model="gpt-4o").bind_tools(tools)
 
 
