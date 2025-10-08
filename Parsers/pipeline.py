@@ -11,6 +11,11 @@ from pathlib import Path
 from ast_module.ast_parser import parse_code, parse_file
 from cfg.cfg_builder import build_cfg_from_ast, ControlFlowGraph
 from pdg.pdg_builder import build_pdg_from_cfg, ProgramDependenceGraph
+from analysis_reports import (
+    generate_ast_report,
+    generate_cfg_report,
+    generate_pdg_report,
+)
 
 class AnalysisPipeline:
     """Complete analysis pipeline for source code: AST -> CFG -> PDG"""
@@ -42,6 +47,13 @@ class AnalysisPipeline:
         self.cfg = None
         self.pdg = None
         self.source_code: Optional[bytes] = None  # Store source code for CFG/PDG
+        self.source_path: Optional[Path] = None
+
+        # Focused reports
+        self.ast_report: Optional[Dict[str, Any]] = None
+        self.cfg_report: Optional[Dict[str, Any]] = None
+        self.pdg_report: Optional[Dict[str, Any]] = None
+        self.report_paths: Dict[str, str] = {}
     
     @staticmethod
     def detect_language_from_file(file_path: str) -> str:
@@ -97,6 +109,7 @@ class AnalysisPipeline:
         else:
             self.source_code = code
         
+        self.source_path = None
         self.ast_tree = parse_code(code, lang)
         return self.ast_tree
     
@@ -129,6 +142,7 @@ class AnalysisPipeline:
         with open(file_path, 'rb') as f:
             self.source_code = f.read()
         
+        self.source_path = Path(file_path)
         self.ast_tree = parse_file(file_path, self.language)
         return self.ast_tree
     
@@ -165,6 +179,58 @@ class AnalysisPipeline:
         # Pass CFG to PDG builder
         self.pdg = build_pdg_from_cfg(self.cfg, self.language)
         return self.pdg
+
+    def generate_component_reports(self):
+        """Generate focused reports for AST, CFG, and PDG."""
+        language = self.language or "python"
+        self.report_paths = {}
+
+        if self.ast_tree is not None:
+            self.ast_report = generate_ast_report(self.ast_tree, self.source_code, language)
+        else:
+            self.ast_report = None
+
+        if self.cfg is not None:
+            self.cfg_report = generate_cfg_report(self.cfg)
+        else:
+            self.cfg_report = None
+
+        if self.pdg is not None:
+            self.pdg_report = generate_pdg_report(self.pdg)
+        else:
+            self.pdg_report = None
+
+    def export_component_reports(self, output_dir: Union[str, Path], base_name: Optional[str] = None) -> Dict[str, str]:
+        """Write focused component reports to disk and return their paths."""
+        if not any([self.ast_report, self.cfg_report, self.pdg_report]):
+            return {}
+
+        if base_name is None:
+            if self.source_path is not None:
+                base_name = self.source_path.stem
+            else:
+                base_name = "analysis"
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        reports = {
+            "ast": self.ast_report,
+            "cfg": self.cfg_report,
+            "pdg": self.pdg_report,
+        }
+
+        stored_paths: Dict[str, str] = {}
+        for key, payload in reports.items():
+            if not payload:
+                continue
+            file_path = output_path / f"{base_name}_{key}.json"
+            with open(file_path, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, indent=2)
+            stored_paths[key] = str(file_path)
+
+        self.report_paths = stored_paths
+        return stored_paths
     
     def run_full_pipeline(self, code: str) -> Dict[str, Any]:
         """
@@ -189,10 +255,13 @@ class AnalysisPipeline:
         
         # Step 3: Build PDG from CFG
         self.build_pdg()
+
+        # Focused summaries
+        self.generate_component_reports()
         
         return self.get_results()
     
-    def run_pipeline_on_file(self, file_path: str) -> Dict[str, Any]:
+    def run_pipeline_on_file(self, file_path: str, output_dir: Union[str, Path] = "output") -> Dict[str, Any]:
         """
         Run the complete pipeline on a file: AST -> CFG -> PDG
         
@@ -215,6 +284,13 @@ class AnalysisPipeline:
         
         # Step 3: Build PDG from CFG
         self.build_pdg()
+
+        # Focused summaries
+        self.generate_component_reports()
+
+        # Persist dedicated outputs
+        if output_dir:
+            self.export_component_reports(output_dir, Path(file_path).stem)
         
         return self.get_results()
     
@@ -230,6 +306,10 @@ class AnalysisPipeline:
             "ast": None,
             "cfg": None,
             "pdg": None,
+            "ast_report": self.ast_report,
+            "cfg_report": self.cfg_report,
+            "pdg_report": self.pdg_report,
+            "report_paths": self.report_paths,
         }
         
         if self.ast_tree:
@@ -339,13 +419,18 @@ def analyze_code(code: str, language: str = "python") -> Dict[str, Any]:
     return pipeline.run_full_pipeline(code)
 
 
-def analyze_file(file_path: str, language: Optional[str] = None) -> Dict[str, Any]:
+def analyze_file(
+    file_path: str,
+    language: Optional[str] = None,
+    output_dir: Union[str, Path] = "output",
+) -> Dict[str, Any]:
     """
     Convenience function to analyze a file
     
     Args:
-        file_path: Path to source file
-        language: Programming language (auto-detected if None)
+    file_path: Path to source file
+    language: Programming language (auto-detected if None)
+    output_dir: Directory where focused reports should be written
     
     Returns:
         Dictionary with all analysis results
@@ -362,7 +447,7 @@ def analyze_file(file_path: str, language: Optional[str] = None) -> Dict[str, An
         language = language_map.get(ext, 'python')
     
     pipeline = AnalysisPipeline(language)
-    return pipeline.run_pipeline_on_file(file_path)
+    return pipeline.run_pipeline_on_file(file_path, output_dir=output_dir)
 
 
 if __name__ == "__main__":

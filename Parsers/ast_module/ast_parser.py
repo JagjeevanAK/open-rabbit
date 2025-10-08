@@ -11,13 +11,11 @@ import tree_sitter_python as tspython
 import tree_sitter_javascript as tsjavascript
 import tree_sitter_typescript as tstypescript
 
-# Load languages using the API
 PY_LANGUAGE = Language(tspython.language())
 JS_LANGUAGE = Language(tsjavascript.language())
 TS_LANGUAGE = Language(tstypescript.language_typescript())
 TSX_LANGUAGE = Language(tstypescript.language_tsx())
 
-# Make a parser for each
 parsers = {
     "python": Parser(PY_LANGUAGE),
     "javascript": Parser(JS_LANGUAGE),
