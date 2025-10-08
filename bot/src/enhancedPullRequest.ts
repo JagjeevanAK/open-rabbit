@@ -4,11 +4,20 @@
  * This module handles PR events and:
  * 1. Fetches relevant learnings from the knowledge base
  * 2. Creates contextual review comments
- * 3. Ingests review feedback back into the knowledge base
+ * 3. Tracks user feedback on bot comments
+ * 4. Ingests interactions as learnings for future PRs
  */
 
 import { Probot, Context } from "probot";
 import { knowledgeBaseService } from "./services/knowledgeBase.js";
+
+// Store bot comment IDs to track user feedback
+const botCommentTracker = new Map<string, {
+  commentId: string;
+  content: string;
+  metadata: any;
+  timestamp: Date;
+}>();
 
 export default (app: Probot) => {
   
@@ -153,27 +162,122 @@ export default (app: Probot) => {
 
       console.log(`Review comment created on PR #${pr.number}`);
 
-      // Extract language from file extension
       const filePath = comment.path;
       const language = getLanguageFromPath(filePath);
 
-      // Ingest the comment to knowledge base
-      await knowledgeBaseService.ingestReviewComment({
-        commentId: `comment-${comment.id}`,
-        comment: comment.body,
-        codeSnippet: comment.diff_hunk, // Contains code context
-        language,
-        repoName,
-        prNumber: pr.number,
-        prTitle: pr.title,
-        filePath,
-        author: comment.user.login,
-      });
+      // Check if this is a reply to a bot comment
+      if (comment.in_reply_to_id) {
+        const parentCommentKey = `${repoName}-${pr.number}-${comment.in_reply_to_id}`;
+        const botCommentData = botCommentTracker.get(parentCommentKey);
+        
+        if (botCommentData) {
+          console.log(`User responded to bot comment ${comment.in_reply_to_id}`);
+          
+          const feedbackType = determineFeedbackType(comment.body);
+          
+          await knowledgeBaseService.ingestReviewComment({
+            commentId: botCommentData.commentId,
+            comment: botCommentData.content,
+            codeSnippet: botCommentData.metadata.codeSnippet,
+            language: botCommentData.metadata.language,
+            repoName,
+            prNumber: pr.number,
+            prTitle: pr.title,
+            filePath: botCommentData.metadata.filePath,
+            author: "open-rabbit-bot",
+            feedbackType,
+            userResponse: comment.body,
+            reviewer: comment.user.login,
+          });
+          
+          console.log(`✅ Learning ingested with ${feedbackType} feedback from ${comment.user.login}`);
+        }
+      } else {
+        await knowledgeBaseService.ingestReviewComment({
+          commentId: `comment-${comment.id}`,
+          comment: comment.body,
+          codeSnippet: comment.diff_hunk,
+          language,
+          repoName,
+          prNumber: pr.number,
+          prTitle: pr.title,
+          filePath,
+          author: comment.user.login,
+        });
+      }
 
     } catch (error) {
       console.error("Error processing review comment:", error);
     }
   });
+
+  /**
+   * Handler for issue comments (includes PR comments and replies)
+   */
+  app.on("issue_comment.created", async (context) => {
+    try {
+      if (!context.payload.issue.pull_request) return;
+
+      const comment = context.payload.comment;
+      const issue = context.payload.issue;
+      const repoName = context.payload.repository.full_name;
+
+      const prNumber = issue.number;
+      const commentBody = comment.body.toLowerCase();
+
+      for (const [key, botCommentData] of botCommentTracker.entries()) {
+        if (key.startsWith(`${repoName}-${prNumber}-`)) {
+          const feedbackType = determineFeedbackType(commentBody);
+          
+          if (feedbackType !== 'ignored') {
+            await knowledgeBaseService.ingestReviewComment({
+              commentId: botCommentData.commentId,
+              comment: botCommentData.content,
+              codeSnippet: botCommentData.metadata.codeSnippet,
+              language: botCommentData.metadata.language,
+              repoName,
+              prNumber,
+              prTitle: issue.title,
+              filePath: botCommentData.metadata.filePath,
+              author: "open-rabbit-bot",
+              feedbackType,
+              userResponse: comment.body,
+              reviewer: comment.user.login,
+            });
+            
+            console.log(`✅ Learning ingested from issue comment with ${feedbackType} feedback`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error processing issue comment:", error);
+    }
+  });
+
+  /**
+   * Handler for reactions on comments (thumbs up/down, etc.)
+   */
+  app.on([
+    "pull_request_review_comment.edited",
+    "issue_comment.edited"
+  ], async (_context) => {
+    console.log("Comment edited - potential feedback signal");
+  });
+
+  setInterval(() => {
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    
+    for (const [key, data] of botCommentTracker.entries()) {
+      if (data.timestamp < oneHourAgo) {
+        botCommentTracker.delete(key);
+      }
+    }
+    
+    if (botCommentTracker.size > 0) {
+      console.log(`🧹 Cleaned up old bot comment trackers. Current size: ${botCommentTracker.size}`);
+    }
+  }, 30 * 60 * 1000);
 };
 
 /**
@@ -186,81 +290,91 @@ async function createEnhancedReview(
   const pr = context.payload.pull_request;
   const repoName = context.payload.repository.full_name;
   
-  // Example review comments - in production, these would come from your AI analysis
   const reviewComments = [];
   
-  // Check for common issues based on learnings
   const files = await context.octokit.pulls.listFiles({
     owner: context.payload.repository.owner.login,
     repo: context.payload.repository.name,
     pull_number: pr.number,
   });
 
-  for (const file of files.data.slice(0, 3)) { // Limit to first 3 files for demo
-    // Skip binary files
+  for (const file of files.data.slice(0, 3)) { 
     if (!file.filename.match(/\.(js|ts|py|java|go|rb|php|cpp|c|h)$/)) {
       continue;
     }
 
     const language = getLanguageFromPath(file.filename);
 
-    // Analyze file and create suggestion based on learnings
     const relevantLearnings = learnings.filter(l => 
       !l.language || l.language === language
     );
 
     if (relevantLearnings.length > 0 && file.patch) {
-      // Create a comment applying the learning
       const learning = relevantLearnings[0];
       const lines = file.patch.split('\n');
       const addedLines = lines.filter(l => l.startsWith('+')).length;
       
       if (addedLines > 0) {
-        // Find a position in the patch (simplified - in production, use more sophisticated logic)
         const position = Math.min(5, lines.length - 1);
+        
+        const commentBody = `💡 **Based on project learnings:** ${learning.learning_text}\n\n_This suggestion is based on past code reviews in this repository._`;
         
         reviewComments.push({
           path: file.filename,
           position,
-          body: `💡 **Based on project learnings:** ${learning.learning_text}\n\n_This suggestion is based on past code reviews in this repository._`,
+          body: commentBody,
         });
 
-        // Ingest this bot comment to KB for future reference
-        await knowledgeBaseService.ingestReviewComment({
-          commentId: `bot-${Date.now()}-${file.filename}`,
-          comment: learning.learning_text,
-          codeSnippet: file.patch?.substring(0, 200),
-          language,
-          repoName,
-          prNumber: pr.number,
-          prTitle: pr.title,
-          filePath: file.filename,
-          author: "open-rabbit-bot",
+        const botCommentId = `bot-${Date.now()}-${file.filename}`;
+        botCommentTracker.set(`${repoName}-${pr.number}-${botCommentId}`, {
+          commentId: botCommentId,
+          content: learning.learning_text,
+          metadata: {
+            codeSnippet: file.patch?.substring(0, 200),
+            language,
+            filePath: file.filename,
+          },
+          timestamp: new Date(),
         });
+        
+        console.log(`📚 Tracked bot comment ${botCommentId} for feedback collection`);
       }
     }
   }
 
-  // Create the review if we have comments
   if (reviewComments.length > 0) {
     try {
+      const usedLearningsText = learnings.slice(0, 3).map((l, idx) => {
+        const source = l.source || {};
+        return `**Learning ${idx + 1}:**\n` +
+               `- From: ${source.author || 'unknown'} (PR #${source.pr_number || 'N/A'})\n` +
+               `- File: ${source.file_path || 'N/A'}\n` +
+               `- Context: ${l.learning_text}\n` +
+               `- Confidence: ${(l.confidence_score * 100).toFixed(0)}%`;
+      }).join('\n\n');
+
+      const reviewBody = `🤖 **AI-Powered Review with Project Context**\n\n` +
+                        `I've analyzed your changes with context from past code reviews:\n\n` +
+                        `### 📚 Learnings used\n\n${usedLearningsText}\n\n` +
+                        `---\n\n` +
+                        `💡 These suggestions are based on patterns and feedback from previous PRs in this repository.`;
+
       await context.octokit.pulls.createReview({
         owner: context.payload.repository.owner.login,
         repo: context.payload.repository.name,
         pull_number: pr.number,
         event: "COMMENT",
-        body: "🤖 **AI-Powered Review with Project Context**\n\nI've analyzed your changes with context from past code reviews:",
+        body: reviewBody,
         comments: reviewComments,
       });
+      
+      console.log(`✅ Created review with ${reviewComments.length} comments using ${learnings.length} learnings`);
     } catch (error) {
       console.error("Error creating review:", error);
     }
   }
 }
 
-/**
- * Get programming language from file path
- */
 function getLanguageFromPath(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase();
   const langMap: { [key: string]: string } = {
@@ -282,4 +396,30 @@ function getLanguageFromPath(path: string): string {
     'kt': 'kotlin',
   };
   return langMap[ext || ''] || 'unknown';
+}
+
+function determineFeedbackType(userResponse: string): 'accepted' | 'rejected' | 'modified' | 'thanked' | 'debated' | 'ignored' {
+  const lower = userResponse.toLowerCase();
+  
+  if (lower.match(/thank|thanks|good|great|helpful|perfect|exactly|agreed|correct|nice|👍|✅/)) {
+    return 'thanked';
+  }
+  
+  if (lower.match(/done|fixed|applied|committed|merged|updated|changed/)) {
+    return 'accepted';
+  }
+  
+  if (lower.match(/disagree|no|nope|wrong|incorrect|not sure|don't think|shouldn't|❌|👎/)) {
+    return 'rejected';
+  }
+  
+  if (lower.match(/but|however|what about|instead|alternatively|consider|modify/)) {
+    return 'debated';
+  }
+  
+  if (lower.match(/modified|adjusted|tweaked|adapted|different approach/)) {
+    return 'modified';
+  }
+  
+  return 'ignored';
 }

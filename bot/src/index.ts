@@ -6,6 +6,7 @@ setupTelemetry();
 import { Probot } from "probot";
 import manualTrigger from "./manualComment.js";
 import enhancedPullRequest from "./enhancedPullRequest.js";
+import newInstallation from "./newInstallation.js";
 
 export default (app: Probot, options: any) => {
   // Load manual trigger routes for external API access
@@ -13,6 +14,9 @@ export default (app: Probot, options: any) => {
 
   // Load enhanced PR handler with knowledge base integration
   enhancedPullRequest(app);
+
+  // Load new installation handler
+  newInstallation(app);
 
   // For more information on building apps:
   // https://probot.github.io/docs/

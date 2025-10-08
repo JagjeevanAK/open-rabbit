@@ -1,6 +1,6 @@
 import axios from "axios";
 import { Probot, Context } from "probot";
-import pullRequest from "./pullRequest.js";
+import pullRequest from "./openPullRequest.js";
 
 const url = process.env.BACKEND_URL || "http://localhost:3000/"
 

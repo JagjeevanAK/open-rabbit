@@ -87,6 +87,9 @@ export class KnowledgeBaseService {
       prTitle?: string;
       filePath: string;
       author: string;
+      feedbackType?: 'accepted' | 'rejected' | 'modified' | 'thanked' | 'debated' | 'ignored';
+      userResponse?: string;
+      reviewer?: string;
     }
   ): Promise<IngestionResponse | null> {
     if (!this.enabled) return null;
@@ -98,16 +101,18 @@ export class KnowledgeBaseService {
           raw_comment: commentData.comment,
           code_snippet: commentData.codeSnippet,
           language: commentData.language,
+          feedback_type: commentData.feedbackType,
           source: {
             repo_name: commentData.repoName,
             pr_number: commentData.prNumber,
             pr_title: commentData.prTitle,
             file_path: commentData.filePath,
             author: commentData.author,
+            reviewer: commentData.reviewer,
             timestamp: new Date().toISOString(),
           },
         },
-        async_processing: true, // Use async by default to avoid blocking
+        async_processing: true,
       };
 
       const response = await this.client.post<IngestionResponse>(
@@ -115,7 +120,7 @@ export class KnowledgeBaseService {
         request
       );
 
-      console.log(`Ingested comment to KB: ${response.data.status}`);
+      console.log(`Ingested comment to KB: ${response.data.status} (feedback: ${commentData.feedbackType || 'none'})`);
       return response.data;
     } catch (error) {
       console.error('Failed to ingest comment to knowledge base:', error);
@@ -134,6 +139,8 @@ export class KnowledgeBaseService {
       prTitle?: string;
       filePath: string;
       author: string;
+      feedbackType?: 'accepted' | 'rejected' | 'modified' | 'thanked' | 'debated' | 'ignored';
+      reviewer?: string;
     }>
   ): Promise<{ task_id: string; status: string; total_comments: number } | null> {
     if (!this.enabled || comments.length === 0) return null;
@@ -144,12 +151,14 @@ export class KnowledgeBaseService {
         raw_comment: c.comment,
         code_snippet: c.codeSnippet,
         language: c.language,
+        feedback_type: c.feedbackType,
         source: {
           repo_name: c.repoName,
           pr_number: c.prNumber,
           pr_title: c.prTitle,
           file_path: c.filePath,
           author: c.author,
+          reviewer: c.reviewer,
           timestamp: new Date().toISOString(),
         },
       }));
