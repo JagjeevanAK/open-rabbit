@@ -50,5 +50,4 @@ systemPrompt = SystemMessage(
     
     Start each review by gathering relevant knowledge base context, then use parser tools for deep analysis!
     
-    
 """)

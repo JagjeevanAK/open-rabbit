@@ -10,5 +10,5 @@ def comment():
     pass
 
 @router.post("/accept")
-def sugg_commit():
+def accept_commit():
     pass
