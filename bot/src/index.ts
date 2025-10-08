@@ -4,7 +4,7 @@ import { setupTelemetry } from './observability/telemetry.js';
 setupTelemetry();
 
 import { Probot } from "probot";
-import manualTrigger from "./manualComment.js";
+import manualTrigger from "./comment.js";
 import enhancedPullRequest from "./enhancedPullRequest.js";
 import newInstallation from "./newInstallation.js";
 
