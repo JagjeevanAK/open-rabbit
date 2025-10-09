@@ -22,6 +22,7 @@ class ReviewRequest(BaseModel):
     branch: Optional[str] = Field(None, description="Branch name to review")
     changed_files: Optional[List[str]] = Field(None, description="List of changed files")
     pr_description: Optional[str] = Field(None, description="Pull request description")
+    generate_tests: bool = Field(False, description="Whether to generate unit tests for changed files")
 
 
 class FileReviewRequest(BaseModel):
@@ -29,6 +30,7 @@ class FileReviewRequest(BaseModel):
     file_paths: List[str] = Field(..., description="List of file paths to review")
     repo_path: str = Field(..., description="Path to the repository")
     context: Optional[str] = Field(None, description="Additional context about the review")
+    generate_tests: bool = Field(False, description="Whether to generate unit tests")
 
 
 class ReviewResponse(BaseModel):
@@ -211,7 +213,8 @@ async def _execute_pr_review(task_id: str, request: ReviewRequest):
             pr_number=request.pr_number,
             branch=request.branch,
             changed_files=request.changed_files,
-            pr_description=request.pr_description
+            pr_description=request.pr_description,
+            generate_tests=request.generate_tests
         )
         
         review_tasks[task_id]["status"] = "completed"
@@ -234,7 +237,8 @@ async def _execute_file_review(task_id: str, request: FileReviewRequest):
         result = workflow.review_files(
             file_paths=request.file_paths,
             repo_path=request.repo_path,
-            context=request.context
+            context=request.context,
+            generate_tests=request.generate_tests
         )
         
         review_tasks[task_id]["status"] = "completed"
@@ -244,4 +248,5 @@ async def _execute_file_review(task_id: str, request: FileReviewRequest):
     except Exception as e:
         review_tasks[task_id]["status"] = "failed"
         review_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
+        review_tasks[task_id]["error"] = str(e)
         review_tasks[task_id]["error"] = str(e)

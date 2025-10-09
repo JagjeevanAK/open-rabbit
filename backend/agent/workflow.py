@@ -22,7 +22,8 @@ class CodeReviewWorkflow:
         pr_number: Optional[int] = None,
         branch: Optional[str] = None,
         changed_files: Optional[List[str]] = None,
-        pr_description: Optional[str] = None
+        pr_description: Optional[str] = None,
+        generate_tests: bool = False
     ) -> Dict[str, Any]:
         """
         Execute a complete code review workflow for a pull request.
@@ -33,6 +34,7 @@ class CodeReviewWorkflow:
             branch: Branch name to review
             changed_files: List of changed files (if known)
             pr_description: Description of the pull request
+            generate_tests: Whether to generate unit tests for changed files
             
         Returns:
             Dictionary containing the review results
@@ -43,7 +45,8 @@ class CodeReviewWorkflow:
             pr_number=pr_number,
             branch=branch,
             changed_files=changed_files,
-            pr_description=pr_description
+            pr_description=pr_description,
+            generate_tests=generate_tests
         )
         
         initial_state: AgentState = {
@@ -52,7 +55,9 @@ class CodeReviewWorkflow:
             "knowledge_context": {},
             "parser_results": {},
             "review_output": {},
-            "current_stage": "context_enrichment"
+            "unit_tests": {},
+            "current_stage": "context_enrichment",
+            "generate_tests": generate_tests
         }
         
         final_state = self.app.invoke(initial_state)
@@ -63,7 +68,8 @@ class CodeReviewWorkflow:
         self,
         file_paths: List[str],
         repo_path: str,
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        generate_tests: bool = False
     ) -> Dict[str, Any]:
         """
         Review specific files without a PR context.
@@ -72,6 +78,7 @@ class CodeReviewWorkflow:
             file_paths: List of file paths to review
             repo_path: Path to the repository
             context: Additional context about the review
+            generate_tests: Whether to generate unit tests
             
         Returns:
             Dictionary containing the review results
@@ -92,6 +99,7 @@ Perform a comprehensive code review including:
 1. Gather relevant learnings from knowledge base
 2. Perform static analysis (AST, CFG, PDG)
 3. Provide detailed feedback on code quality, bugs, and improvements
+{f'4. Generate unit tests for the files' if generate_tests else ''}
 """
         
         initial_state: AgentState = {
@@ -100,7 +108,9 @@ Perform a comprehensive code review including:
             "knowledge_context": {},
             "parser_results": {},
             "review_output": {},
-            "current_stage": "context_enrichment"
+            "unit_tests": {},
+            "current_stage": "context_enrichment",
+            "generate_tests": generate_tests
         }
         
         final_state = self.app.invoke(initial_state)
@@ -113,7 +123,8 @@ Perform a comprehensive code review including:
         pr_number: Optional[int] = None,
         branch: Optional[str] = None,
         changed_files: Optional[List[str]] = None,
-        pr_description: Optional[str] = None
+        pr_description: Optional[str] = None,
+        generate_tests: bool = False
     ) -> str:
         """Build the review request message"""
         
@@ -135,14 +146,20 @@ Perform a comprehensive code review including:
             files_list = "\n".join([f"  - {f}" for f in changed_files])
             message_parts.append(f"\nChanged files:\n{files_list}")
         
-        message_parts.append("""
-Review Process:
-1. **Context Enrichment**: Clone the repository, gather knowledge base learnings, and read changed files
-2. **Static Analysis**: Analyze code using AST, CFG, and PDG parsers
-3. **Code Review**: Generate comprehensive review based on all context
-4. **Format Output**: Return structured JSON review comments
-
-Start by cloning the repository and gathering context.""")
+        review_steps = [
+            "1. **Context Enrichment**: Clone the repository, gather knowledge base learnings, and read changed files",
+            "2. **Static Analysis**: Analyze code using AST, CFG, and PDG parsers",
+            "3. **Code Review**: Generate comprehensive review based on all context"
+        ]
+        
+        if generate_tests:
+            review_steps.append("4. **Unit Test Generation**: Generate comprehensive unit tests for changed files")
+            review_steps.append("5. **Format Output**: Return structured JSON review comments")
+        else:
+            review_steps.append("4. **Format Output**: Return structured JSON review comments")
+        
+        message_parts.append(f"\nReview Process:\n" + "\n".join(review_steps))
+        message_parts.append("\nStart by cloning the repository and gathering context.")
         
         return "\n".join(message_parts)
     
@@ -157,6 +174,7 @@ Start by cloning the repository and gathering context.""")
             "pr_context": final_state.get("pr_context", {}),
             "knowledge_context": final_state.get("knowledge_context", {}),
             "parser_results": final_state.get("parser_results", {}),
+            "unit_tests": final_state.get("unit_tests", {}),
             "messages": []
         }
         
@@ -190,7 +208,8 @@ def invoke_review(
     pr_number: Optional[int] = None,
     branch: Optional[str] = None,
     changed_files: Optional[List[str]] = None,
-    pr_description: Optional[str] = None
+    pr_description: Optional[str] = None,
+    generate_tests: bool = False
 ) -> Dict[str, Any]:
     """
     Convenience function to invoke a code review.
@@ -201,6 +220,7 @@ def invoke_review(
         branch: Branch name
         changed_files: List of changed files
         pr_description: PR description
+        generate_tests: Whether to generate unit tests
         
     Returns:
         Review results dictionary
@@ -211,5 +231,6 @@ def invoke_review(
         pr_number=pr_number,
         branch=branch,
         changed_files=changed_files,
-        pr_description=pr_description
+        pr_description=pr_description,
+        generate_tests=generate_tests
     )

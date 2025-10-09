@@ -54,11 +54,27 @@ def print_workflow_graph():
     │  └─ Generate Actionable Feedback                                │
     └─────────────────────────┬───────────────────────────────────────┘
                               │                     │
-                              ├─────► [Tools] ◄────┘
-                              │
-                              ▼
+                              ├─────► [Tools] ◄────┤
+                              │                     │
+                              ▼                     │
+                ┌─────────────────────┐            │
+                │ generate_tests?     │            │
+                └──┬──────────────┬───┘            │
+                   │ Yes          │ No             │
+                   ▼              ▼                │
+    ┌──────────────────────────┐  │               │
+    │ STAGE 4: Unit Test Gen   │  │               │
+    │ ├─ Detect Framework      │  │               │
+    │ ├─ Read Source Files     │  │               │
+    │ ├─ Generate Tests        │  │               │
+    │ └─ Write Test Files      │  │               │
+    └──────────┬───────────────┘  │               │
+               │                   │               │
+               ├─────► [Tools] ◄───┤───────────────┘
+               │                   │
+               ▼                   ▼
     ┌─────────────────────────────────────────────────────────────────┐
-    │  STAGE 4: Format Output                                         │
+    │  STAGE 5: Format Output                                         │
     │  ├─ Structure Review as JSON                                    │
     │  ├─ Format Comments (inline/diff/range)                         │
     │  └─ Generate Summary                                            │
@@ -85,12 +101,17 @@ def print_workflow_graph():
     │  ├─ get_repo_structure
     │  ├─ git_get_pr_files
     │  ├─ git_get_pr_diff
-    │  └─ git_get_file_content
+    │  ├─ git_get_file_content
+    │  ├─ git_add_tool
+    │  ├─ git_commit_tool
+    │  └─ git_branch_tool
     │
     └─ File Tools:
        ├─ file_reader_tool
        ├─ list_files_tool
-       └─ search_in_file_tool
+       ├─ search_in_file_tool
+       ├─ find_test_framework_tool
+       └─ file_writer_tool
     """)
 
 
@@ -129,11 +150,21 @@ def print_state_schema():
             - Summary
             - Metadata
         
+        unit_tests: Dict
+            - Generated test files
+            - Test framework used
+            - Coverage information
+        
         current_stage: str
             - "context_enrichment"
             - "static_analysis"
             - "code_review"
+            - "unit_test_generation"
             - "complete"
+        
+        generate_tests: bool
+            - Whether to generate unit tests
+            - Controls conditional routing
     }
     """)
 

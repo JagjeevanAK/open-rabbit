@@ -20,12 +20,19 @@ from agent.tools.Parsers import (
 from agent.tools.git import (
     git_get_pr_files,
     git_get_pr_diff,
-    git_get_file_content
+    git_get_file_content,
+    git_add_tool,
+    git_commit_tool,
+    git_branch_tool
 )
 from agent.tools.fileSearch import (
     file_reader_tool,
     list_files_tool,
-    search_in_file_tool
+    search_in_file_tool,
+    find_test_framework_tool
+)
+from agent.tools.fileUpdates import (
+    file_writer_tool
 )
 from agent.tools.gitClone import (
     git_clone_tool,
@@ -33,6 +40,7 @@ from agent.tools.gitClone import (
 )
 from systemPrompt import systemPrompt
 from messageTypePrompt import systemPrompt as messageTypeSystemPrompt
+from unit_testPrompt import systemPrompt as unitTestSystemPrompt
 
 load_dotenv()
 
@@ -43,7 +51,9 @@ class AgentState(TypedDict):
     knowledge_context: dict
     parser_results: dict
     review_output: dict
+    unit_tests: dict
     current_stage: str
+    generate_tests: bool
 
 
 tools = [
@@ -56,9 +66,14 @@ tools = [
     git_get_pr_files,
     git_get_pr_diff,
     git_get_file_content,
+    git_add_tool,
+    git_commit_tool,
+    git_branch_tool,
     file_reader_tool,
     list_files_tool,
     search_in_file_tool,
+    find_test_framework_tool,
+    file_writer_tool,
     git_clone_tool,
     get_repo_structure
 ]
@@ -198,6 +213,43 @@ Use appropriate comment types (inline, diff, range) based on the complexity."""
     }
 
 
+def unit_test_generation_node(state: AgentState) -> AgentState:
+    """
+    Stage 5 (Optional): Unit Test Generation
+    Generates comprehensive unit tests for changed files
+    """
+    messages = state["messages"]
+    
+    test_prompt = [
+        unitTestSystemPrompt,
+        SystemMessage(
+            content="""You are in the UNIT TEST GENERATION stage.
+
+Your tasks:
+1. Use find_test_framework_tool to detect the testing framework used in the project
+2. For each changed file that needs tests:
+   - Read the source file using file_reader_tool
+   - Analyze the code and plan test cases (think step-by-step)
+   - Use file_writer_tool to create comprehensive unit tests
+3. Follow the existing testing patterns and conventions
+4. Ensure tests cover:
+   - Happy paths
+   - Edge cases
+   - Error handling
+   - Async operations (if applicable)
+
+Generate production-ready unit tests that match the project's testing style."""
+        )
+    ]
+    
+    response = llm_with_tools.invoke(test_prompt + messages)
+    
+    return {
+        "messages": [response],
+        "current_stage": "unit_test_generation"
+    }
+
+
 def route_after_context_enrichment(state: AgentState) -> Literal["tools", "static_analysis"]:
     """Router after context enrichment"""
     messages = state["messages"]
@@ -218,8 +270,23 @@ def route_after_static_analysis(state: AgentState) -> Literal["tools", "code_rev
     return "code_review"
 
 
-def route_after_code_review(state: AgentState) -> Literal["tools", "format_output"]:
-    """Router after code review"""
+def route_after_code_review(state: AgentState) -> Literal["tools", "unit_test_generation", "format_output"]:
+    """Router after code review - checks for tools or test generation"""
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+    
+    generate_tests = state.get("generate_tests", False)
+    if generate_tests:
+        return "unit_test_generation"
+    
+    return "format_output"
+
+
+def route_after_unit_tests(state: AgentState) -> Literal["tools", "format_output"]:
+    """Router after unit test generation"""
     messages = state["messages"]
     last_message = messages[-1]
     
@@ -238,6 +305,8 @@ def route_after_tools(state: AgentState) -> str:
         return "static_analysis"
     elif current_stage == "code_review":
         return "code_review"
+    elif current_stage == "unit_test_generation":
+        return "unit_test_generation"
     else:
         return "context_enrichment"
 
@@ -247,6 +316,7 @@ graph = StateGraph(AgentState)
 graph.add_node("context_enrichment", context_enrichment_node)
 graph.add_node("static_analysis", static_analysis_node)
 graph.add_node("code_review", code_review_node)
+graph.add_node("unit_test_generation", unit_test_generation_node)
 graph.add_node("format_output", format_output_node)
 graph.add_node("tools", tool_node)
 
@@ -275,6 +345,16 @@ graph.add_conditional_edges(
     route_after_code_review,
     {
         "tools": "tools",
+        "unit_test_generation": "unit_test_generation",
+        "format_output": "format_output"
+    }
+)
+
+graph.add_conditional_edges(
+    "unit_test_generation",
+    route_after_unit_tests,
+    {
+        "tools": "tools",
         "format_output": "format_output"
     }
 )
@@ -285,7 +365,8 @@ graph.add_conditional_edges(
     {
         "context_enrichment": "context_enrichment",
         "static_analysis": "static_analysis",
-        "code_review": "code_review"
+        "code_review": "code_review",
+        "unit_test_generation": "unit_test_generation"
     }
 )
 
