@@ -23,7 +23,8 @@ from agent.tools.git import (
     git_get_file_content,
     git_add_tool,
     git_commit_tool,
-    git_branch_tool
+    git_branch_tool,
+    git_push_tool
 )
 from agent.tools.fileSearch import (
     file_reader_tool,
@@ -69,6 +70,7 @@ tools = [
     git_add_tool,
     git_commit_tool,
     git_branch_tool,
+    git_push_tool,
     file_reader_tool,
     list_files_tool,
     search_in_file_tool,
@@ -216,29 +218,40 @@ Use appropriate comment types (inline, diff, range) based on the complexity."""
 def unit_test_generation_node(state: AgentState) -> AgentState:
     """
     Stage 5 (Optional): Unit Test Generation
-    Generates comprehensive unit tests for changed files
+    Generates comprehensive unit tests for changed files and commits them to a new branch
     """
     messages = state["messages"]
+    pr_context = state.get("pr_context", {})
     
     test_prompt = [
         unitTestSystemPrompt,
         SystemMessage(
-            content="""You are in the UNIT TEST GENERATION stage.
+            content=f"""You are in the UNIT TEST GENERATION stage.
 
 Your tasks:
-1. Use find_test_framework_tool to detect the testing framework used in the project
-2. For each changed file that needs tests:
+1. Use git_branch_tool to create and switch to a new test branch
+2. Use find_test_framework_tool to detect the testing framework used in the project
+3. For each changed file that needs tests:
    - Read the source file using file_reader_tool
    - Analyze the code and plan test cases (think step-by-step)
    - Use file_writer_tool to create comprehensive unit tests
-3. Follow the existing testing patterns and conventions
-4. Ensure tests cover:
+4. After generating tests:
+   - Use git_add_tool to stage the test files
+   - Use git_commit_tool to commit with a descriptive message
+   - Use git_push_tool to push the test branch to remote
+5. Follow the existing testing patterns and conventions
+6. Ensure tests cover:
    - Happy paths
    - Edge cases
    - Error handling
    - Async operations (if applicable)
 
-Generate production-ready unit tests that match the project's testing style."""
+Generate production-ready unit tests that match the project's testing style.
+
+Repository context:
+- Repo: {pr_context.get('repo_url', 'N/A')}
+- Base branch: {pr_context.get('branch', 'main')}
+"""
         )
     ]
     

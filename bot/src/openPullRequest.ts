@@ -1,4 +1,5 @@
 import { Probot } from "probot";
+import { createBranchFromBase, createOrUpdateFile, createPullRequestFromBranch } from "./utils/pullRequestHelper.js";
 
 export default (app: Probot) => {
     app.on("installation.created", async (context) => {
@@ -8,37 +9,41 @@ export default (app: Probot) => {
         const baseBranch = "main";          
         const newBranch = "probot-new-pr";  
 
-        const { data: refData } = await context.octokit.git.getRef({
+        const branchResult = await createBranchFromBase(context, owner, repo, baseBranch, newBranch);
+        
+        if (!branchResult.success) {
+            console.error(`Failed to create branch: ${branchResult.error}`);
+            return;
+        }
+
+        const fileResult = await createOrUpdateFile(
+            context,
             owner,
             repo,
-            ref: `heads/${baseBranch}`,
-        });
+            "example.txt",
+            "Hello from Probot!",
+            "Add example.txt via Probot",
+            newBranch
+        );
 
-        await context.octokit.git.createRef({
+        if (!fileResult.success) {
+            console.error(`Failed to create file: ${fileResult.error}`);
+            return;
+        }
+
+        const prResult = await createPullRequestFromBranch(context, {
             owner,
             repo,
-            ref: `refs/heads/${newBranch}`,
-            sha: refData.object.sha,
-        });
-
-        const content = Buffer.from("Hello from Probot!").toString("base64");
-
-        await context.octokit.repos.createOrUpdateFileContents({
-            owner,
-            repo,
-            path: "example.txt",
-            message: "Add example.txt via Probot",
-            content,
-            branch: newBranch,
-        });
-
-        await context.octokit.pulls.create({
-            owner,
-            repo,
+            baseBranch,
+            headBranch: newBranch,
             title: "Probot: Add example.txt",
-            head: newBranch,
-            base: baseBranch,
             body: "This PR was automatically created by the Probot app.",
         });
+
+        if (prResult.success) {
+            console.log(`PR created successfully: ${prResult.pr?.html_url}`);
+        } else {
+            console.error(`Failed to create PR: ${prResult.error}`);
+        }
     });
 };
