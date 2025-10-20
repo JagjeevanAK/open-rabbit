@@ -17,6 +17,11 @@ from agent.tools.Parsers import (
     analyze_changed_files,
     get_parser_capabilities
 )
+from agent.tools.parserReports import (
+    read_parser_reports,
+    get_parser_report_summary,
+    check_specific_issue_in_reports
+)
 from agent.tools.git import (
     git_get_pr_files,
     git_get_pr_diff,
@@ -64,6 +69,9 @@ tools = [
     parse_code_file,
     analyze_changed_files,
     get_parser_capabilities,
+    read_parser_reports,
+    get_parser_report_summary,
+    check_specific_issue_in_reports,
     git_get_pr_files,
     git_get_pr_diff,
     git_get_file_content,
@@ -117,7 +125,7 @@ Gather comprehensive context before analysis. Call the necessary tools."""
 def static_analysis_node(state: AgentState) -> AgentState:
     """
     Stage 2: Static Analysis
-    Triggers Parsers agent for AST, CFG, PDG analysis
+    Triggers Parsers agent for AST, CFG, PDG, Semantic analysis
     """
     messages = state["messages"]
     
@@ -125,10 +133,17 @@ def static_analysis_node(state: AgentState) -> AgentState:
         content="""You are in the STATIC ANALYSIS stage of code review.
 
 Your tasks:
-1. Use analyze_changed_files to trigger batch analysis of all changed files
+1. Use analyze_changed_files to trigger batch analysis of all changed files (generates reports)
 2. Use parse_code_file for detailed analysis of critical files
-3. Review AST, CFG, and PDG outputs from the Parsers agent
-4. Identify code quality issues, potential bugs, and architectural concerns
+3. Use read_parser_reports to read AST, CFG, PDG, and Semantic reports from Parsers/output
+4. Use get_parser_report_summary for quick overview of analysis results
+5. Use check_specific_issue_in_reports to validate specific issues against parser findings
+6. Identify code quality issues, potential bugs, and architectural concerns
+
+The new parser reports tools allow you to:
+- Read reports directly from output directory
+- Cross-reference code with parser findings
+- Validate issues recursively
 
 Perform comprehensive static analysis on the codebase."""
     )

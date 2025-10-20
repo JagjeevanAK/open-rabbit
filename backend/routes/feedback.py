@@ -3,8 +3,12 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import uuid
+import logging
 
 from agent.workflow import CodeReviewWorkflow
+from services.github_comment_service import post_review_to_github
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/feedback",
@@ -23,6 +27,8 @@ class ReviewRequest(BaseModel):
     changed_files: Optional[List[str]] = Field(None, description="List of changed files")
     pr_description: Optional[str] = Field(None, description="Pull request description")
     generate_tests: bool = Field(False, description="Whether to generate unit tests for changed files")
+    installation_id: Optional[int] = Field(None, description="GitHub App installation ID (required for auto-posting)")
+    auto_post: bool = Field(True, description="Automatically post review comment to GitHub PR")
 
 
 class FileReviewRequest(BaseModel):
@@ -51,8 +57,55 @@ class ReviewStatus(BaseModel):
 
 
 @router.post("/comment")
-def comment():
-    pass
+def post_review_comment(
+    owner: str = Field(..., description="Repository owner"),
+    repo: str = Field(..., description="Repository name"),
+    pr_number: int = Field(..., description="Pull request number"),
+    task_id: str = Field(..., description="Task ID of completed review"),
+    installation_id: int = Field(..., description="GitHub App installation ID")
+):
+    """
+    Manually post a completed review as a comment to GitHub PR.
+    
+    This is useful if auto_post was disabled or if you want to re-post a review.
+    """
+    if task_id not in review_tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    task = review_tasks[task_id]
+    
+    if task["status"] != "completed":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Task is not completed (status: {task['status']})"
+        )
+    
+    try:
+        from services.github_comment_service import post_review_to_github
+        
+        result = post_review_to_github(
+            owner=owner,
+            repo=repo,
+            pull_number=pr_number,
+            review_result=task["result"],
+            installation_id=installation_id
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": f"Review posted to {owner}/{repo}#{pr_number}",
+                "task_id": task_id
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to post comment: {result.get('error')}"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error posting comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/accept")
@@ -220,6 +273,38 @@ async def _execute_pr_review(task_id: str, request: ReviewRequest):
         review_tasks[task_id]["status"] = "completed"
         review_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
         review_tasks[task_id]["result"] = result
+        
+        # Auto-post comment to GitHub if enabled
+        if request.auto_post and request.pr_number and request.installation_id:
+            try:
+                # Parse owner/repo from repo_url
+                parts = request.repo_url.replace("https://github.com/", "").split("/")
+                if len(parts) >= 2:
+                    owner = parts[0]
+                    repo = parts[1].replace(".git", "")
+                    
+                    logger.info(f"Auto-posting review to {owner}/{repo}#{request.pr_number}")
+                    
+                    comment_result = post_review_to_github(
+                        owner=owner,
+                        repo=repo,
+                        pull_number=request.pr_number,
+                        review_result=result,
+                        installation_id=request.installation_id
+                    )
+                    
+                    review_tasks[task_id]["comment_posted"] = comment_result
+                    
+                    if comment_result.get("success"):
+                        logger.info(f"Review comment posted successfully to PR #{request.pr_number}")
+                    else:
+                        logger.error(f"Failed to post comment: {comment_result.get('error')}")
+                else:
+                    logger.warning(f"Could not parse owner/repo from: {request.repo_url}")
+                    
+            except Exception as e:
+                logger.error(f"Error auto-posting comment: {e}")
+                review_tasks[task_id]["comment_error"] = str(e)
         
     except Exception as e:
         review_tasks[task_id]["status"] = "failed"

@@ -17,6 +17,7 @@ class AgentState(TypedDict, total=False):
     ast_analysis: Optional[str]
     cfg_analysis: Optional[str] 
     pdg_analysis: Optional[str]
+    semantic_analysis: Optional[str]
     combined_review: Optional[str]
     output_directory: Optional[str]
 
@@ -309,6 +310,22 @@ def analyze_pdg_report() -> str:
     
     return analyze_component_chunks(llm, chunks, "PDG")
 
+@tool
+def analyze_semantic_report() -> str:
+    """Analyze the focused Semantic Graph report (*_semantic.json)."""
+    output_path = Path(CURRENT_OUTPUT_DIR)
+    semantic_files = list(output_path.glob("*_semantic.json"))
+    
+    if not semantic_files:
+        return "No Semantic Graph report file found."
+    
+    semantic_file = semantic_files[0]
+    semantic_data = load_json(str(semantic_file))
+    
+    chunks = smart_chunk_json(semantic_data, max_tokens=80000)
+    
+    return analyze_component_chunks(llm, chunks, "Semantic Graph")
+
 def run_ast_analysis(state: AgentState) -> AgentState:
     """Analyze AST report and update state."""
     print("running ast_analysis")
@@ -330,14 +347,22 @@ def run_pdg_analysis(state: AgentState) -> AgentState:
     state["pdg_analysis"] = result
     return state
 
+def run_semantic_analysis(state: AgentState) -> AgentState:
+    """Analyze Semantic Graph report and update state."""
+    print("running semantic_analysis")
+    result = analyze_semantic_report.invoke({})
+    state["semantic_analysis"] = result
+    return state
+
 def create_code_review(state: AgentState) -> AgentState:
     """Generate final code review from all analyses."""
     ast_analysis = state.get("ast_analysis") or "No AST analysis available."
     cfg_analysis = state.get("cfg_analysis") or "No CFG analysis available."
     pdg_analysis = state.get("pdg_analysis") or "No PDG analysis available."
+    semantic_analysis = state.get("semantic_analysis") or "No Semantic analysis available."
     
     # Calculate total content size to ensure we stay within limits
-    total_content = f"{ast_analysis}\n\n{cfg_analysis}\n\n{pdg_analysis}"
+    total_content = f"{ast_analysis}\n\n{cfg_analysis}\n\n{pdg_analysis}\n\n{semantic_analysis}"
     total_tokens = estimate_tokens(total_content)
     
     # If too large, summarize each component first
@@ -345,6 +370,7 @@ def create_code_review(state: AgentState) -> AgentState:
         ast_summary = _summarize_analysis(ast_analysis, "AST")
         cfg_summary = _summarize_analysis(cfg_analysis, "CFG") 
         pdg_summary = _summarize_analysis(pdg_analysis, "PDG")
+        semantic_summary = _summarize_analysis(semantic_analysis, "Semantic Graph")
         
         review_prompt = f"""
 You are a senior code reviewer conducting a comprehensive code analysis.
@@ -359,6 +385,9 @@ Based on the following focused analysis summaries, provide a professional code r
 
 ## PDG Analysis Summary
 {pdg_summary}
+
+## Semantic Graph Analysis Summary
+{semantic_summary}
 
 ## Required Output Format:
 
@@ -400,6 +429,9 @@ Based on the detailed analysis below, provide a professional code review:
 
 ## PDG Analysis  
 {pdg_analysis}
+
+## Semantic Graph Analysis
+{semantic_analysis}
 
 ## Required Output Format:
 
@@ -470,13 +502,15 @@ graph = StateGraph(AgentState)
 graph.add_node("ast_analysis", run_ast_analysis)
 graph.add_node("cfg_analysis", run_cfg_analysis) 
 graph.add_node("pdg_analysis", run_pdg_analysis)
+graph.add_node("semantic_analysis", run_semantic_analysis)
 graph.add_node("code_review", create_code_review)
 
 # Set up workflow sequence
 graph.set_entry_point("ast_analysis")
 graph.add_edge("ast_analysis", "cfg_analysis")
 graph.add_edge("cfg_analysis", "pdg_analysis")
-graph.add_edge("pdg_analysis", "code_review")
+graph.add_edge("pdg_analysis", "semantic_analysis")
+graph.add_edge("semantic_analysis", "code_review")
 
 app = graph.compile()
 
@@ -508,6 +542,7 @@ def run_workflow_analysis(output_dir: str = "output") -> Dict[str, Any]:
         "ast_analysis": result.get("ast_analysis"),
         "cfg_analysis": result.get("cfg_analysis"), 
         "pdg_analysis": result.get("pdg_analysis"),
+        "semantic_analysis": result.get("semantic_analysis"),
         "combined_review": result.get("combined_review"),
         "messages": result.get("messages", [])
     }

@@ -1,14 +1,15 @@
 # Code Analysis Pipeline
 
-A modular source code analysis pipeline that transforms code into Abstract Syntax Trees (AST), Control Flow Graphs (CFG), and Program Dependence Graphs (PDG). Built with tree-sitter for multi-language support.
+A comprehensive source code analysis pipeline that transforms code into Abstract Syntax Trees (AST), Control Flow Graphs (CFG), Program Dependence Graphs (PDG), and Semantic Knowledge Graphs. Built with tree-sitter for multi-language support.
 
 ## Features
 
 - **Multi-language Support**: Python, JavaScript, TypeScript, and TSX
-- **Three-Level Analysis**: AST → CFG → PDG transformation pipeline
+- **Four-Level Analysis**: AST → CFG → PDG → Semantic Graph transformation pipeline
 - **Automatic Language Detection**: Detects language from file extensions
-- **Modular Architecture**: Separate modules for parsing, control flow, and dependency analysis
+- **Modular Architecture**: Separate modules for parsing, control flow, dependency, and semantic analysis
 - **Flexible API**: Run full pipeline or individual analysis steps
+- **Knowledge Graph**: Semantic relationships between code entities (classes, functions, variables)
 
 ## Supported Languages
 
@@ -52,6 +53,7 @@ results = pipeline.run_full_pipeline(code)
 print(f"AST Root: {results['ast']['root_type']}")
 print(f"CFG Blocks: {len(results['cfg']['blocks'])}")
 print(f"PDG Nodes: {len(results['pdg']['nodes'])}")
+print(f"Semantic Nodes: {len(results['semantic']['nodes'])}")
 ```
 
 ### Analyze from File
@@ -80,9 +82,13 @@ cfg = pipeline.build_cfg()
 # Step 3: Build PDG
 pdg = pipeline.build_pdg()
 
+# Step 4: Build Semantic Graph
+semantic = pipeline.build_semantic()
+
 # Access results
 print(f"CFG has {len(cfg.blocks)} blocks")
 print(f"PDG tracks {len(pdg.variables)} variables")
+print(f"Semantic Graph has {len(semantic.nodes)} nodes and {len(semantic.edges)} edges")
 ```
 
 ## Architecture
@@ -94,11 +100,13 @@ Source Code
     ↓
 AST Parser (tree-sitter)
     ↓
-CFG Builder (control flow analysis)
+    ├─→ CFG Builder (control flow analysis)
+    │       ↓
+    │   PDG Builder (dependency analysis)
+    │
+    └─→ Semantic Graph Builder (knowledge graph)
     ↓
-PDG Builder (dependency analysis)
-    ↓
-Structured Output (JSON)
+Structured Output (JSON + Visualizations)
 ```
 
 ### Module Structure
@@ -106,35 +114,54 @@ Structured Output (JSON)
 ```
 Parsers/
 ├── pipeline.py              # Main orchestrator
+├── analysis_reports.py      # Report generation
+├── workflow.py              # AI-powered analysis workflow
 ├── ast_module/
 │   └── ast_parser.py       # AST parsing with tree-sitter
 ├── cfg/
 │   └── cfg_builder.py      # Control flow graph construction
 ├── pdg/
 │   └── pdg_builder.py      # Program dependence graph construction
-└── examples.py             # Usage examples
+├── semantic/
+│   ├── semantic_builder.py # Semantic knowledge graph construction
+│   └── README.md           # Semantic graph documentation
+└── examples/
+    └── semantic_example.py # Semantic graph usage examples
 ```
 
 ## Output Format
 
-The pipeline produces structured JSON output with three main sections:
+The pipeline produces structured JSON output with four main sections:
 
 ### AST Output
 - Root node type
-- Full syntax tree structure
-- Source code positions
+- Function declarations and complexity metrics
+- Variable declarations and usages
+- Import/export statements
+- Control flow keywords
 
 ### CFG Output
 - Basic blocks with unique IDs
 - Block types (entry, exit, statement, condition, loop)
 - Successor and predecessor relationships
 - Statement mapping
+- Unreachable code detection
+- Cyclomatic complexity
 
 ### PDG Output
 - Nodes with dependencies
 - Data dependencies (variable definitions and uses)
 - Control dependencies (conditional execution)
 - Variable tracking across scopes
+- Reaching definitions analysis
+
+### Semantic Graph Output
+- Code entities (functions, classes, variables, imports)
+- Semantic relationships (calls, inherits, references)
+- Call graph analysis
+- Inheritance hierarchy
+- Scope information
+- Type annotations and signatures
 
 ## Use Cases
 
@@ -171,8 +198,11 @@ Build Control Flow Graph from parsed AST.
 **`build_pdg() -> ProgramDependenceGraph`**  
 Build Program Dependence Graph from CFG.
 
-**`get_summary() -> Dict`**  
-Get summary statistics of all analysis components.
+**`build_semantic() -> SemanticGraph`**  
+Build Semantic Knowledge Graph from AST.
+
+**`get_results() -> Dict`**  
+Get all analysis results including AST, CFG, PDG, and Semantic Graph.
 
 **`export_to_file(output_path: str, pretty: bool = True) -> None`**  
 Export analysis results to JSON file.
@@ -184,9 +214,28 @@ Export analysis results to JSON file.
 - `tree-sitter-javascript` >= 0.23.0
 - `tree-sitter-typescript` >= 0.23.0
 
+## Analysis Components
+
+### AST (Abstract Syntax Tree)
+Provides syntactic structure of code using tree-sitter for accurate multi-language parsing.
+
+### CFG (Control Flow Graph)
+Analyzes execution paths, detects unreachable code, and computes cyclomatic complexity.
+
+### PDG (Program Dependence Graph)
+Tracks data flow and control dependencies between statements using reaching definitions analysis.
+
+### Semantic Graph
+Builds a knowledge graph of code entities and their semantic relationships:
+- **Nodes**: Functions, classes, variables, imports
+- **Edges**: Calls, inheritance, references, type relationships
+- **Analysis**: Call graphs, inheritance hierarchies, API extraction
+
+See [semantic/README.md](semantic/README.md) for detailed documentation.
+
 ## Examples
 
-See `examples.py` for comprehensive demonstrations including:
+See `examples/` directory for comprehensive demonstrations including:
 - Basic usage patterns
 - Step-by-step analysis
 - File analysis

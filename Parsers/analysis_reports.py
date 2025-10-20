@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from cfg.cfg_builder import BlockType, ControlFlowGraph
 from pdg.pdg_builder import ProgramDependenceGraph
+from semantic.semantic_builder import SemanticGraph, EdgeType
 
 
 def _node_text(node: Any, source_code: Optional[bytes]) -> str:
@@ -469,4 +470,145 @@ def generate_pdg_report(pdg: ProgramDependenceGraph) -> Dict[str, Any]:
         "data_dependencies": data_dependencies,
         "control_dependencies": control_dependencies,
         "variables": variable_summaries,
+    }
+
+
+def generate_semantic_report(semantic: SemanticGraph) -> Dict[str, Any]:
+    """Generate focused semantic graph report."""
+    if semantic is None:
+        return {}
+    
+    # Categorize nodes by type
+    functions: List[Dict[str, Any]] = []
+    classes: List[Dict[str, Any]] = []
+    variables: List[Dict[str, Any]] = []
+    imports: List[Dict[str, Any]] = []
+    other_nodes: List[Dict[str, Any]] = []
+    
+    for node_id, node in semantic.nodes.items():
+        node_data = {
+            "id": node_id,
+            "name": node.name,
+            "scope": node.scope,
+            "start_line": node.start_line,
+            "end_line": node.end_line,
+        }
+        
+        if node.node_type == "function":
+            node_data["signature"] = node.signature
+            node_data["parameters"] = node.parameters
+            node_data["return_type"] = node.return_type
+            node_data["complexity"] = node.complexity
+            functions.append(node_data)
+        elif node.node_type == "class":
+            node_data["snippet"] = node.code_snippet[:100] if node.code_snippet else ""
+            classes.append(node_data)
+        elif node.node_type == "variable":
+            node_data["snippet"] = node.code_snippet[:100] if node.code_snippet else ""
+            variables.append(node_data)
+        elif node.node_type == "import":
+            node_data["statement"] = node.code_snippet
+            imports.append(node_data)
+        else:
+            other_nodes.append(node_data)
+    
+    # Categorize edges by type
+    calls: List[Dict[str, Any]] = []
+    inheritance: List[Dict[str, Any]] = []
+    references: List[Dict[str, Any]] = []
+    other_edges: List[Dict[str, Any]] = []
+    
+    for edge in semantic.edges:
+        source_node = semantic.nodes.get(edge.source_id)
+        target_node = semantic.nodes.get(edge.target_id)
+        
+        if source_node is None or target_node is None:
+            continue
+        
+        edge_data = {
+            "source_id": edge.source_id,
+            "source_name": source_node.name,
+            "target_id": edge.target_id,
+            "target_name": target_node.name,
+            "metadata": edge.metadata,
+        }
+        
+        if edge.edge_type == EdgeType.CALLS:
+            calls.append(edge_data)
+        elif edge.edge_type == EdgeType.INHERITS:
+            edge_data["parent"] = target_node.name
+            edge_data["child"] = source_node.name
+            inheritance.append(edge_data)
+        elif edge.edge_type == EdgeType.REFERENCES:
+            references.append(edge_data)
+        else:
+            edge_data["type"] = edge.edge_type.value
+            other_edges.append(edge_data)
+    
+    # Build call graph statistics
+    call_graph = semantic.get_call_graph()
+    call_graph_data = []
+    for caller_id, callees in call_graph.items():
+        caller = semantic.nodes.get(caller_id)
+        if caller:
+            callee_names = []
+            for callee_id in callees:
+                callee = semantic.nodes.get(callee_id)
+                if callee:
+                    callee_names.append(callee.name)
+            
+            call_graph_data.append({
+                "caller": caller.name,
+                "caller_id": caller_id,
+                "calls": callee_names,
+            })
+    
+    # Build inheritance hierarchy
+    inheritance_hierarchy = semantic.get_inheritance_hierarchy()
+    hierarchy_data = []
+    for child_id, parent_ids in inheritance_hierarchy.items():
+        child = semantic.nodes.get(child_id)
+        if child:
+            parent_names = []
+            for parent_id in parent_ids:
+                parent = semantic.nodes.get(parent_id)
+                if parent:
+                    parent_names.append(parent.name)
+            
+            hierarchy_data.append({
+                "class": child.name,
+                "class_id": child_id,
+                "inherits_from": parent_names,
+            })
+    
+    # Sort all lists
+    functions.sort(key=lambda x: (x.get("start_line") or 0, x["name"]))
+    classes.sort(key=lambda x: (x.get("start_line") or 0, x["name"]))
+    variables.sort(key=lambda x: x["name"])
+    imports.sort(key=lambda x: (x.get("start_line") or 0, x["name"]))
+    call_graph_data.sort(key=lambda x: x["caller"])
+    hierarchy_data.sort(key=lambda x: x["class"])
+    
+    summary = {
+        "total_nodes": len(semantic.nodes),
+        "total_edges": len(semantic.edges),
+        "function_count": len(functions),
+        "class_count": len(classes),
+        "variable_count": len(variables),
+        "import_count": len(imports),
+        "call_count": len(calls),
+        "inheritance_count": len(inheritance),
+    }
+    
+    return {
+        "summary": summary,
+        "functions": functions,
+        "classes": classes,
+        "variables": variables,
+        "imports": imports,
+        "call_graph": call_graph_data,
+        "inheritance_hierarchy": hierarchy_data,
+        "calls": calls,
+        "inheritance_relationships": inheritance,
+        "references": references,
     }

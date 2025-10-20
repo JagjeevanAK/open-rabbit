@@ -7,7 +7,6 @@ router = APIRouter(
     prefix="/users",
     tags=["users"]
 )
-
 @router.post("/new_install")
 def new_install(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Register a new GitHub app installation"""
@@ -15,14 +14,14 @@ def new_install(user: schemas.UserCreate, db: Session = Depends(get_db)):
         existing_install = db.query(crud.models.NewInstall).filter(
             crud.models.NewInstall.name == user.name
         ).first()
-        
+
         if existing_install:
             return {
                 "status": "already_exists",
                 "message": f"Installation for {user.name} already exists",
                 "data": existing_install
             }
-        
+
         db_user = crud.create_install(db, user=user)
         return {
             "status": "success",
@@ -34,11 +33,11 @@ def new_install(user: schemas.UserCreate, db: Session = Depends(get_db)):
             "status": "error",
             "message": f"Failed to register installation: {str(e)}"
         }
-    
+
 @router.post("/signin")
 async def signin(body: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = crud.get_user(db, user_name=body.name)
-    
+
     if db_user:
         return {"status": "Successful signIn"}
     return {"status": "User does not exist in db"}

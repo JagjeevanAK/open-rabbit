@@ -11,14 +11,16 @@ from pathlib import Path
 from ast_module.ast_parser import parse_code, parse_file
 from cfg.cfg_builder import build_cfg_from_ast, ControlFlowGraph
 from pdg.pdg_builder import build_pdg_from_cfg, ProgramDependenceGraph
+from semantic.semantic_builder import build_semantic_graph_from_ast, SemanticGraph
 from analysis_reports import (
     generate_ast_report,
     generate_cfg_report,
     generate_pdg_report,
+    generate_semantic_report,
 )
 
 class AnalysisPipeline:
-    """Complete analysis pipeline for source code: AST -> CFG -> PDG"""
+    """Complete analysis pipeline for source code: AST -> CFG -> PDG -> Semantic"""
     
     SUPPORTED_LANGUAGES = ["python", "javascript", "typescript", "tsx"]
     
@@ -46,6 +48,7 @@ class AnalysisPipeline:
         self.ast_tree = None
         self.cfg = None
         self.pdg = None
+        self.semantic = None
         self.source_code: Optional[bytes] = None  # Store source code for CFG/PDG
         self.source_path: Optional[Path] = None
 
@@ -53,6 +56,7 @@ class AnalysisPipeline:
         self.ast_report: Optional[Dict[str, Any]] = None
         self.cfg_report: Optional[Dict[str, Any]] = None
         self.pdg_report: Optional[Dict[str, Any]] = None
+        self.semantic_report: Optional[Dict[str, Any]] = None
         self.report_paths: Dict[str, str] = {}
     
     @staticmethod
@@ -179,9 +183,26 @@ class AnalysisPipeline:
         # Pass CFG to PDG builder
         self.pdg = build_pdg_from_cfg(self.cfg, self.language)
         return self.pdg
+    
+    def build_semantic(self) -> SemanticGraph:
+        """
+        Step 4: Build Semantic Graph from AST
+        
+        Takes the AST output and creates a semantic knowledge graph
+        
+        Returns:
+            SemanticGraph object
+        """
+        if self.ast_tree is None:
+            raise ValueError("No AST available. Call parse_code() or parse_file() first.")
+        
+        assert self.language is not None, "Language must be set before building Semantic Graph"
+        # Pass AST root node and source code to Semantic builder
+        self.semantic = build_semantic_graph_from_ast(self.ast_tree.root_node, self.language, self.source_code)
+        return self.semantic
 
     def generate_component_reports(self):
-        """Generate focused reports for AST, CFG, and PDG."""
+        """Generate focused reports for AST, CFG, PDG, and Semantic."""
         language = self.language or "python"
         self.report_paths = {}
 
@@ -199,10 +220,15 @@ class AnalysisPipeline:
             self.pdg_report = generate_pdg_report(self.pdg)
         else:
             self.pdg_report = None
+        
+        if self.semantic is not None:
+            self.semantic_report = generate_semantic_report(self.semantic)
+        else:
+            self.semantic_report = None
 
     def export_component_reports(self, output_dir: Union[str, Path], base_name: Optional[str] = None) -> Dict[str, str]:
         """Write focused component reports to disk and return their paths."""
-        if not any([self.ast_report, self.cfg_report, self.pdg_report]):
+        if not any([self.ast_report, self.cfg_report, self.pdg_report, self.semantic_report]):
             return {}
 
         if base_name is None:
@@ -218,6 +244,7 @@ class AnalysisPipeline:
             "ast": self.ast_report,
             "cfg": self.cfg_report,
             "pdg": self.pdg_report,
+            "semantic": self.semantic_report,
         }
 
         stored_paths: Dict[str, str] = {}
@@ -234,12 +261,13 @@ class AnalysisPipeline:
     
     def run_full_pipeline(self, code: str) -> Dict[str, Any]:
         """
-        Run the complete pipeline: AST -> CFG -> PDG
+        Run the complete pipeline: AST -> CFG -> PDG -> Semantic
         
         Pipeline Flow:
         1. AST: Parse code using ast_module
         2. CFG: Build control flow graph from AST
         3. PDG: Build program dependence graph from CFG
+        4. Semantic: Build semantic knowledge graph from AST
         
         Args:
             code: Source code string
@@ -255,6 +283,9 @@ class AnalysisPipeline:
         
         # Step 3: Build PDG from CFG
         self.build_pdg()
+        
+        # Step 4: Build Semantic Graph from AST
+        self.build_semantic()
 
         # Focused summaries
         self.generate_component_reports()
@@ -263,12 +294,13 @@ class AnalysisPipeline:
     
     def run_pipeline_on_file(self, file_path: str, output_dir: Union[str, Path] = "output") -> Dict[str, Any]:
         """
-        Run the complete pipeline on a file: AST -> CFG -> PDG
+        Run the complete pipeline on a file: AST -> CFG -> PDG -> Semantic
         
         Pipeline Flow:
         1. AST: Parse file using ast_module
         2. CFG: Build control flow graph from AST
         3. PDG: Build program dependence graph from CFG
+        4. Semantic: Build semantic knowledge graph from AST
         
         Args:
             file_path: Path to source file
@@ -284,6 +316,9 @@ class AnalysisPipeline:
         
         # Step 3: Build PDG from CFG
         self.build_pdg()
+        
+        # Step 4: Build Semantic Graph from AST
+        self.build_semantic()
 
         # Focused summaries
         self.generate_component_reports()
@@ -299,16 +334,18 @@ class AnalysisPipeline:
         Get all analysis results
         
         Returns:
-            Dictionary with AST, CFG, and PDG information
+            Dictionary with AST, CFG, PDG, and Semantic information
         """
         results = {
             "language": self.language,
             "ast": None,
             "cfg": None,
             "pdg": None,
+            "semantic": None,
             "ast_report": self.ast_report,
             "cfg_report": self.cfg_report,
             "pdg_report": self.pdg_report,
+            "semantic_report": self.semantic_report,
             "report_paths": self.report_paths,
         }
         
@@ -332,6 +369,9 @@ class AnalysisPipeline:
         if self.pdg:
             results["pdg"] = self.pdg.to_dict()
         
+        if self.semantic:
+            results["semantic"] = self.semantic.to_dict()
+        
         return results
     
     def export_to_json(self, output_path: str):
@@ -350,7 +390,7 @@ class AnalysisPipeline:
     
     def export_visualizations(self, output_dir: str):
         """
-        Export DOT visualizations for CFG and PDG
+        Export DOT visualizations for CFG, PDG, and Semantic Graph
         
         Args:
             output_dir: Directory to save visualization files
@@ -371,6 +411,13 @@ class AnalysisPipeline:
             with open(pdg_path, 'w', encoding='utf-8') as f:
                 f.write(pdg_dot)
             print(f"PDG visualization saved to {pdg_path}")
+        
+        if self.semantic:
+            semantic_dot = self.semantic.to_dot()
+            semantic_path = output_path / "semantic.dot"
+            with open(semantic_path, 'w', encoding='utf-8') as f:
+                f.write(semantic_dot)
+            print(f"Semantic Graph visualization saved to {semantic_path}")
     
     def print_summary(self):
         """Print a summary of the analysis"""
@@ -400,6 +447,14 @@ class AnalysisPipeline:
             total_ctrl_deps = sum(len(node.control_dependencies) for node in self.pdg.nodes.values())
             print(f"  Data dependencies: {total_data_deps}")
             print(f"  Control dependencies: {total_ctrl_deps}")
+        
+        if self.semantic:
+            print(f"\nSemantic Graph:")
+            print(f"  Nodes: {len(self.semantic.nodes)}")
+            print(f"  Edges: {len(self.semantic.edges)}")
+            print(f"  Functions: {len(self.semantic.find_nodes_by_type('function'))}")
+            print(f"  Classes: {len(self.semantic.find_nodes_by_type('class'))}")
+            print(f"  Variables: {len(self.semantic.find_nodes_by_type('variable'))}")
         
         print("=" * 60)
 
