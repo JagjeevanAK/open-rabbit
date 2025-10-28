@@ -4,9 +4,8 @@
 #   push:
 #     branches:
 #       - main
-
 # jobs:
-#   deploy:
+#   deploy-bot:
 #     runs-on: ubuntu-latest
 
 #     permissions:
@@ -22,16 +21,19 @@
 #         with:
 #           registry: ghcr.io
 #           username: ${{ github.actor }}
-#           password: ${{ secrets.GITHUB_TOKEN }}
+#           password: ${{ secrets.TOKEN }}
 
-#       - name: Build and push Docker image to GHCR
+#       - name: Build and push Bot Docker image to GHCR
 #         uses: docker/build-push-action@v6
 #         with:
-#           context: .
+#           context: ./bot
+#           file: ./bot/Dockerfile
 #           push: true
-#           tags: ghcr.io/${{ github.repository_owner }}/myapp:latest
+#           tags: |
+#             ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:latest
+#             ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:${{ github.sha }}
 
-#       - name: SSH into Droplet and deploy container
+#       - name: SSH into Droplet and deploy bot container
 #         uses: appleboy/ssh-action@v1.2.0
 #         with:
 #           host: ${{ secrets.DROPLET_IP }}
@@ -39,17 +41,29 @@
 #           key: ${{ secrets.DROPLET_SSH_KEY }}
 #           script: |
 #             echo "Logging in to GHCR..."
-#             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+#             echo "${{ secrets.TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-#             echo "Pulling latest image..."
-#             docker pull ghcr.io/${{ github.repository_owner }}/myapp:latest
+#             echo "Pulling latest bot image..."
+#             docker pull ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:latest
 
-#             echo "Stopping old container..."
-#             docker stop myapp || true
-#             docker rm myapp || true
+#             echo "Stopping old bot container..."
+#             docker stop open-rabbit-bot || true
+#             docker rm open-rabbit-bot || true
 
-#             echo "Starting new container..."
-#             docker run -d --name myapp -p 80:80 ghcr.io/${{ github.repository_owner }}/myapp:latest
+#             echo "Starting new bot container..."
+#             docker run -d \
+#               --name open-rabbit-bot \
+#               --restart unless-stopped \
+#               -p 3000:3000 \
+#               -e APP_ID="${{ secrets.GITHUB_APP_ID }}" \
+#               -e PRIVATE_KEY="${{ secrets.GITHUB_APP_PRIVATE_KEY }}" \
+#               -e WEBHOOK_SECRET="${{ secrets.GITHUB_WEBHOOK_SECRET }}" \
+#               -e WEBHOOK_PROXY_URL="${{ secrets.WEBHOOK_PROXY_URL }}" \
+#               -e BACKEND_URL="${{ secrets.BACKEND_URL }}" \
+#               ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:latest
 
-#             echo "Deployment complete!"
+#             echo "Cleaning up old images..."
+#             docker image prune -f
+
+#             echo "Bot deployment complete!"
 
