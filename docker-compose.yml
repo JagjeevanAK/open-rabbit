@@ -1,0 +1,20 @@
+services:
+  bot:
+    image: ghcr.io/jagjeevanak/open-rabbit-bot:latest
+    container_name: open-rabbit-bot
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - APP_ID=${GITHUB_APP_ID}
+      - PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
+      - WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - WEBHOOK_PROXY_URL=${WEBHOOK_PROXY_URL}
+      - BACKEND_URL=${BACKEND_URL}
+      - NODE_ENV=production
+    networks:
+      - open-rabbit-network
+
+networks:
+  open-rabbit-network:
+    driver: bridge

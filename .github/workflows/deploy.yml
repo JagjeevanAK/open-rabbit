@@ -4,8 +4,14 @@
 #   push:
 #     branches:
 #       - main
+#     paths:
+#       - 'bot/**'
+#       - 'backend/**'
+#       - 'docker-compose.yml'
+#       - '.github/workflows/deploy.yml'
+
 # jobs:
-#   deploy-bot:
+#   build-and-push:
 #     runs-on: ubuntu-latest
 
 #     permissions:
@@ -21,9 +27,9 @@
 #         with:
 #           registry: ghcr.io
 #           username: ${{ github.actor }}
-#           password: ${{ secrets.TOKEN }}
+#           password: ${{ secrets.GITHUB_TOKEN }}
 
-#       - name: Build and push Bot Docker image to GHCR
+#       - name: Build and push Bot Docker image
 #         uses: docker/build-push-action@v6
 #         with:
 #           context: ./bot
@@ -33,37 +39,57 @@
 #             ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:latest
 #             ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:${{ github.sha }}
 
-#       - name: SSH into Droplet and deploy bot container
+#   deploy:
+#     needs: build-and-push
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Copy docker-compose.yml to Droplet
+#         uses: appleboy/scp-action@v0.1.7
+#         with:
+#           host: ${{ secrets.DROPLET_IP }}
+#           username: ${{ secrets.DROPLET_USER }}
+#           key: ${{ secrets.DROPLET_SSH_KEY }}
+#           source: "docker-compose.yml"
+#           target: "~/open-rabbit/"
+
+#       - name: Deploy with Docker Compose
 #         uses: appleboy/ssh-action@v1.2.0
 #         with:
 #           host: ${{ secrets.DROPLET_IP }}
 #           username: ${{ secrets.DROPLET_USER }}
 #           key: ${{ secrets.DROPLET_SSH_KEY }}
 #           script: |
+#             cd ~/open-rabbit
+
+#             echo "Creating .env file..."
+#             cat > .env << EOF
+#             GITHUB_APP_ID=${{ secrets.GITHUB_APP_ID }}
+#             GITHUB_APP_PRIVATE_KEY=${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+#             GITHUB_WEBHOOK_SECRET=${{ secrets.GITHUB_WEBHOOK_SECRET }}
+#             WEBHOOK_PROXY_URL=${{ secrets.WEBHOOK_PROXY_URL }}
+#             BACKEND_URL=${{ secrets.BACKEND_URL }}
+#             EOF
+
 #             echo "Logging in to GHCR..."
-#             echo "${{ secrets.TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+#             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-#             echo "Pulling latest bot image..."
-#             docker pull ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:latest
+#             echo "Pulling latest images..."
+#             docker compose pull
 
-#             echo "Stopping old bot container..."
-#             docker stop open-rabbit-bot || true
-#             docker rm open-rabbit-bot || true
+#             echo "Stopping old containers..."
+#             docker compose down
 
-#             echo "Starting new bot container..."
-#             docker run -d \
-#               --name open-rabbit-bot \
-#               --restart unless-stopped \
-#               -p 3000:3000 \
-#               -e APP_ID="${{ secrets.GITHUB_APP_ID }}" \
-#               -e PRIVATE_KEY="${{ secrets.GITHUB_APP_PRIVATE_KEY }}" \
-#               -e WEBHOOK_SECRET="${{ secrets.GITHUB_WEBHOOK_SECRET }}" \
-#               -e WEBHOOK_PROXY_URL="${{ secrets.WEBHOOK_PROXY_URL }}" \
-#               -e BACKEND_URL="${{ secrets.BACKEND_URL }}" \
-#               ghcr.io/${{ github.repository_owner }}/open-rabbit-bot:latest
+#             echo "Starting containers with Docker Compose..."
+#             docker compose up -d
 
 #             echo "Cleaning up old images..."
 #             docker image prune -f
 
-#             echo "Bot deployment complete!"
+#             echo "Deployment complete!"
+#             echo "Running containers:"
+#             docker compose ps
 
