@@ -1,8 +1,8 @@
 {
-  "name": "bot",
+  "name": "open-rabbit",
   "version": "1.0.0",
   "private": true,
-  "description": "This is a github code reviewer bot that suggest the improment ment in the PR and \t  other     sequrity suggestions",
+  "description": "This is a github code reviewer bot that suggest the improment ment in the PR and other sequrity suggestions",
   "author": "Jagjeevan Kashid",
   "license": "ISC",
   "homepage": "https://github.com//",

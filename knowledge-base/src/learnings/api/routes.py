@@ -432,30 +432,3 @@ async def format_learnings_context(
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Context formatting failed: {str(e)}")
-
-
-# Root endpoint
-@app.get("/", tags=["Root"])
-async def root():
-    """
-    API root with basic info and links.
-    """
-    return {
-        "service": "Learnings API",
-        "version": settings.api_version,
-        "description": "CodeRabbit-inspired learnings ingestion and retrieval system",
-        "docs": "/docs",
-        "redoc": "/redoc",
-        "endpoints": {
-            "ingestion": "/learnings/ingest",
-            "search": "/learnings/search",
-            "pr_context": "/learnings/pr-context",
-            "health": "/health",
-            "stats": "/stats"
-        }
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

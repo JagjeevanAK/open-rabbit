@@ -20,7 +20,7 @@ Quick start:
 """
 
 __version__ = "1.0.0"
-__author__ = "Open Rabbit Team"
+__author__ = "Jagjeevan Kashid"
 __description__ = "CodeRabbit-inspired learnings ingestion and retrieval system"
 
 # Core exports

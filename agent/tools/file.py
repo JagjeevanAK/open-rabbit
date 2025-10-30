@@ -1,6 +1,43 @@
+import difflib
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from langchain_core.tools import tool
+
+@tool
+def file_delete_tool(
+    file_path: str,
+    missing_ok: bool = False,
+) -> str:
+    """
+    Delete a file from the filesystem.
+    
+    Args:
+        file_path: Path to the file to delete (relative or absolute)
+        missing_ok: If True, no error is raised if file doesn't exist
+    
+    Returns:
+        Success or error message describing the operation result
+    """
+    try:
+        path = Path(file_path)
+        
+        if not path.exists():
+            if missing_ok:
+                return f"File '{file_path}' does not exist (ignored)"
+            return f"Error: File '{file_path}' does not exist"
+        
+        if path.is_dir():
+            return f"Error: '{file_path}' is a directory. Use directory deletion tool instead"
+        
+        file_size = path.stat().st_size
+        path.unlink()
+        
+        return f"Successfully deleted file: {file_path} ({file_size} bytes)"
+        
+    except PermissionError:
+        return f"Error: Permission denied to delete '{file_path}'"
+    except Exception as e:
+        return f"Error: {type(e).__name__}: {str(e)}"
 
 @tool
 def file_reader_tool(
@@ -206,14 +243,73 @@ def find_test_framework_tool(directory_path: str = ".") -> str:
         return f"Error: {type(e).__name__}: {str(e)}"
 
 
-if __name__ == "__main__":
-    print("=== File Reader Tool Examples ===\n")
+@tool
+def file_writer_tool(
+    action: Literal["create", "patch", "overwrite"],
+    file_path: str,
+    content: str,
+    old_content: Optional[str] = None,
+    create_directories: bool = True,
+) -> str:
+    """
+    Write, create, or patch files on the filesystem.
     
-    print("1. Reading a file:")
-    print(file_reader_tool("example.py"))
+    Args:
+        action: 'create' for new files, 'patch' to apply changes, 'overwrite' to replace entire file
+        file_path: Path to the file (relative or absolute)
+        content: For 'create'/'overwrite': full file content. For 'patch': the new version of the code section
+        old_content: For 'patch' only: the exact old content to replace (must match precisely)
+        create_directories: Whether to create parent directories if they don't exist
     
-    print("\n2. Finding test files:")
-    print(list_files_tool(".", "test_*.py"))
-    
-    print("\n3. Detecting testing framework:")
-    print(find_test_framework_tool("."))
+    Returns:
+        Success or error message describing the operation result
+    """
+    try:
+        path = Path(file_path)
+        
+        if create_directories and not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+        if action == "create":
+            if path.exists():
+                return f"Error: File '{file_path}' already exists. Use 'overwrite' or 'patch' to modify it."
+            
+            path.write_text(content, encoding="utf-8")
+            return f"Successfully created file: {file_path} ({len(content)} chars)"
+            
+        elif action == "overwrite":
+            path.write_text(content, encoding="utf-8")
+            existed = "Updated" if path.exists() else "Created"
+            return f"{existed} file: {file_path} ({len(content)} chars)"
+            
+        elif action == "patch":
+            if not path.exists():
+                return f"Error: File '{file_path}' does not exist. Use 'create' action first."
+            
+            if old_content is None:
+                return "Error: 'old_content' is required for patch action"
+            
+            current_content = path.read_text(encoding="utf-8")
+            
+            if old_content not in current_content:
+                diff = list(difflib.unified_diff(
+                    old_content.splitlines(keepends=True),
+                    current_content.splitlines(keepends=True),
+                    fromfile="expected",
+                    tofile="actual",
+                    lineterm=""
+                ))
+                diff_str = "".join(diff[:20])
+                
+                return f"Error: Could not find old_content in file.\n\nDiff preview:\n{diff_str}\n\nMake sure old_content matches exactly (including whitespace)."
+            
+            new_content = current_content.replace(old_content, content, 1)
+            path.write_text(new_content, encoding="utf-8")
+            
+            lines_changed = len(content.splitlines()) - len(old_content.splitlines())
+            return f"Successfully patched file: {file_path} ({lines_changed:+d} lines)"
+            
+    except PermissionError:
+        return f"Error: Permission denied to write to '{file_path}'"
+    except Exception as e:
+        return f"Error: {type(e).__name__}: {str(e)}"

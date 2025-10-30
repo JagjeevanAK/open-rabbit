@@ -411,7 +411,6 @@ def check_specific_issue_in_reports(
         })
 
 
-# Export tools
 __all__ = [
     'read_parser_reports',
     'get_parser_report_summary',

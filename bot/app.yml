@@ -15,7 +15,7 @@
 default_events:
   # - check_run
   # - check_suite
-  # - commit_comment
+  - commit_comment
   # - create
   # - delete
   # - deployment
@@ -24,28 +24,28 @@ default_events:
   # - gollum
   # - issue_comment
   - issues
-# - label
-# - milestone
-# - member
-# - membership
-# - org_block
-# - organization
-# - page_build
-# - project
-# - project_card
-# - project_column
-# - public
-# - pull_request
-# - pull_request_review
-# - pull_request_review_comment
-# - push
-# - release
-# - repository
-# - repository_import
-# - status
-# - team
-# - team_add
-# - watch
+  # - label
+  # - milestone
+  # - member
+  # - membership
+  # - org_block
+  # - organization
+  # - page_build
+  # - project
+  # - project_card
+  # - project_column
+  # - public
+  - pull_request
+  - pull_request_review
+  - pull_request_review_comment
+  # - push
+  # - release
+  # - repository
+  # - repository_import
+  # - status
+  # - team
+  # - team_add
+  # - watch
 
 # The set of permissions needed by the GitHub App. The format of the object uses
 # the permission name for the key (for example, issues) and the access type for
@@ -82,7 +82,7 @@ default_permissions:
 
   # Pull requests and related comments, assignees, labels, milestones, and merges.
   # https://developer.github.com/v3/apps/permissions/#permission-on-pull-requests
-  # pull_requests: read
+  pull_requests: read
 
   # Manage the post-receive hooks for a repository.
   # https://developer.github.com/v3/apps/permissions/#permission-on-repository-hooks
@@ -124,14 +124,14 @@ default_permissions:
   # https://developer.github.com/v3/apps/permissions/
   # organization_administration: read
 # The name of the GitHub App. Defaults to the name specified in package.json
-# name: My Probot App
+name: Open Rabbit
 
 # The homepage of your GitHub App.
 # url: https://example.com/
 
 # A description of the GitHub App.
-# description: A description of my awesome app
+description: This is a github code reviewer bot that suggest the improment ment in the PR and other sequrity suggestions
 
 # Set to true when your GitHub App is available to the public or false when it is only accessible to the owner of the app.
-# Default: true
-# public: false
+Default: true
+public: true
