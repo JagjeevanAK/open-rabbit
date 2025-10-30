@@ -150,37 +150,6 @@ async def review_pull_request(
     )
 
 
-# @router.post("/review/files", response_model=ReviewResponse)
-# async def review_files(
-#     request: FileReviewRequest,
-#     background_tasks: BackgroundTasks
-# ):
-#     """
-#     Review specific files without a PR context.
-#     """
-#     task_id = str(uuid.uuid4())
-    
-#     review_tasks[task_id] = {
-#         "status": "pending",
-#         "created_at": datetime.utcnow().isoformat(),
-#         "completed_at": None,
-#         "result": None
-#     }
-    
-#     background_tasks.add_task(
-#         _execute_file_review,
-#         task_id=task_id,
-#         request=request
-#     )
-    
-#     return ReviewResponse(
-#         task_id=task_id,
-#         status="pending",
-#         message="File review started. Use /feedback/review/status/{task_id} to check progress.",
-#         review_url=f"/feedback/review/status/{task_id}"
-#     )
-
-
 @router.get("/review/status/{task_id}", response_model=ReviewStatus)
 async def get_review_status(task_id: str):
     """
@@ -309,29 +278,4 @@ async def _execute_pr_review(task_id: str, request: ReviewRequest):
     except Exception as e:
         review_tasks[task_id]["status"] = "failed"
         review_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
-        review_tasks[task_id]["error"] = str(e)
-
-
-async def _execute_file_review(task_id: str, request: FileReviewRequest):
-    """
-    Background task to execute file review workflow.
-    """
-    try:
-        review_tasks[task_id]["status"] = "running"
-        
-        result = workflow.review_files(
-            file_paths=request.file_paths,
-            repo_path=request.repo_path,
-            context=request.context,
-            generate_tests=request.generate_tests
-        )
-        
-        review_tasks[task_id]["status"] = "completed"
-        review_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
-        review_tasks[task_id]["result"] = result
-        
-    except Exception as e:
-        review_tasks[task_id]["status"] = "failed"
-        review_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
-        review_tasks[task_id]["error"] = str(e)
         review_tasks[task_id]["error"] = str(e)
