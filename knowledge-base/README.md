@@ -1,317 +1,253 @@
-# Learnings System - CodeRabbit Architecture
+# Knowledge Base API
 
-A production-ready **Learnings** subsystem inspired by CodeRabbit's architecture for extracting, storing, and retrieving project-specific learnings from code review comments.
+A structured knowledge base system for storing and retrieving code learnings using Elasticsearch, OpenAI embeddings, and asynchronous processing with Celery.
 
-## 🎯 Overview
+## Features
 
-This system enables AI code reviewers to learn from past feedback and inject relevant context into future reviews. It implements:
+- **FastAPI REST API** for submitting learnings
+- **Celery** for asynchronous processing
+- **Elasticsearch** for vector search
+- **OpenAI Embeddings** for semantic search
+- **Redis** as message broker and result backend
 
-- **LLM-based learning extraction** from review comments
-- **Vector database storage** for semantic search (Qdrant)
-- **Async ingestion pipeline** using Celery workers
-- **FastAPI REST endpoints** for integration
-- **Context injection** for LangGraph/LangChain workflows
+## Prerequisites
 
-## 🏗️ Architecture
-
-```
-Review Comment → Ingestion Endpoint → Celery Queue
-                                          ↓
-                                   Extract Learning (LLM)
-                                          ↓
-                                   Generate Embedding
-                                          ↓
-                                   Store in Qdrant
-                                          
-Future Review → Search Endpoint → Retrieve Relevant Learnings → Inject into Prompt
-```
-
-### Components
-
-| Module | Purpose |
-|--------|---------|
-| `models.py` | Pydantic schemas for learnings, comments, and requests |
-| `config.py` | Settings and environment configuration |
-| `extractor.py` | LLM-based learning extraction from raw comments |
-| `storage.py` | Qdrant vector database persistence layer |
-| `retriever.py` | Semantic search and context formatting |
-| `ingestor.py` | Celery tasks for async processing |
-| `routes.py` | FastAPI endpoints |
-| `main.py` | Application entry point |
-| `celery_worker.py` | Celery worker entry point |
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.11+
-- Redis (for Celery)
-- Qdrant (vector database)
+- Python 3.13+
+- Elasticsearch 8.x
+- Redis 6.x+
 - OpenAI API key
 
-### Installation
+## Installation
+
+1. Clone the repository and navigate to the project directory:
 
 ```bash
-# Install dependencies
-uv sync  # or pip install -e .
+cd knowledge-base
+```
 
-# Copy environment template
+2. Install dependencies using uv:
+
+```bash
+uv sync
+```
+
+3. Set up environment variables:
+
+```bash
 cp .env.example .env
-
-# Edit .env with your credentials
-# - Set OPENAI_API_KEY
-# - Configure Qdrant URL (default: http://localhost:6333)
-# - Configure Redis URL (default: redis://localhost:6379/0)
 ```
 
-### Start Services
+Edit `.env` and add your OpenAI API key and other configuration.
 
-**Terminal 1: Start Qdrant**
+4. Start Elasticsearch:
+
 ```bash
-docker run -p 6333:6333 qdrant/qdrant
+# Using Docker
+docker run -d --name elasticsearch \
+  -p 9200:9200 \
+  -e "discovery.type=single-node" \
+  -e "xpack.security.enabled=false" \
+  elasticsearch:8.16.0
 ```
 
-**Terminal 2: Start Redis**
+5. Start Redis:
+
 ```bash
-docker run -p 6379:6379 redis:latest
-# Or use system Redis: redis-server
+# Using Docker
+docker run -d --name redis -p 6379:6379 redis:7
 ```
 
-**Terminal 3: Start Celery Worker**
+6. Initialize the Elasticsearch index:
+
 ```bash
-celery -A celery_worker worker --loglevel=info
+uv run python elastic/hybrid_search.py
 ```
 
-**Terminal 4: Start FastAPI Server**
+## Running the Application
+
+You need to run three separate processes:
+
+### 1. Start the API Server
+
 ```bash
-uvicorn main:app --reload --port 8000
+uv run uvicorn app:app --reload
 ```
 
-Visit: http://localhost:8000/docs for interactive API documentation
+The API will be available at `http://localhost:8000`
 
-## 📡 API Usage
-
-### Ingest a Review Comment
+### 2. Start Celery Worker
 
 ```bash
-curl -X POST http://localhost:8000/learnings/ingest \
+uv run celery -A celery_app worker --loglevel=info
+```
+
+### 3. (Optional) Start Celery Flower for monitoring
+
+```bash
+uv run celery -A celery_app flower
+```
+
+Visit `http://localhost:5555` to monitor tasks.
+
+## API Usage
+
+### Add a Single Learning
+
+```bash
+curl -X POST "http://localhost:8000/learnings" \
   -H "Content-Type: application/json" \
   -d '{
-    "comment": {
-      "comment_id": "c123",
-      "raw_comment": "Always use const instead of let for variables that never change.",
-      "code_snippet": "let config = { ... };",
-      "language": "javascript",
-      "source": {
-        "repo_name": "acme/web-app",
-        "pr_number": 1234,
-        "file_path": "src/config.js",
-        "author": "coderabbit-bot"
-      }
-    },
-    "async_processing": true
+    "learning": "The Zero project prefers to handle dependency updates through automated tools like Dependabot rather than manual updates.",
+    "learnt_from": "JagjeevanAK",
+    "pr": "Mail-0/Zero#1583",
+    "file": "apps/docs/package.json:1-0",
+    "timestamp": "2025-07-01T12:53:32.467Z"
   }'
 ```
 
-**Response:**
+Response:
 ```json
 {
-  "task_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "queued",
-  "learning_id": null
+  "message": "Learning has been queued for processing",
+  "task_id": "abc123-def456-..."
 }
 ```
 
-### Search for Learnings
+### Check Task Status
 
 ```bash
-curl "http://localhost:8000/learnings/search?q=dependency%20updates&k=3&repo=acme/web-app"
+curl "http://localhost:8000/tasks/{task_id}"
 ```
 
-**Response:**
+Response:
 ```json
 {
-  "query": "dependency updates",
-  "results": [
-    {
-      "learning_id": "...",
-      "learning_text": "The project requires regular dependency updates with security audits.",
-      "original_comment": "Bump outdated dependencies...",
-      "language": "javascript",
-      "source": { ... },
-      "confidence_score": 0.95
-    }
-  ],
-  "total_results": 1,
-  "search_time_ms": 45.2
+  "task_id": "abc123-def456-...",
+  "status": "SUCCESS",
+  "result": {
+    "status": "success",
+    "document_id": "xyz789",
+    "index": "open_rabbit_knowledge_base"
+  }
 }
 ```
 
-### Get PR Context Learnings
+### Add Multiple Learnings (Batch)
 
 ```bash
-curl -X POST http://localhost:8000/learnings/pr-context \
+curl -X POST "http://localhost:8000/learnings/batch" \
   -H "Content-Type: application/json" \
-  -d '{
-    "pr_description": "Add automated dependency update workflow",
-    "changed_files": ["package.json", ".github/workflows/deps.yml"],
-    "repo_name": "acme/web-app",
-    "k": 5
-  }'
+  -d '[
+    {
+      "learning": "First learning...",
+      "learnt_from": "User1"
+    },
+    {
+      "learning": "Second learning...",
+      "learnt_from": "User2"
+    }
+  ]'
 ```
 
-## 🔧 Integration Examples
+## Data Model
 
-### With LangGraph
+### Learning Request
 
-```python
-from langgraph.graph import StateGraph
-from retriever import LearningRetriever
-from storage import LearningStorage
-from config import get_settings
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `learning` | string | Yes | The learning or insight to store |
+| `learnt_from` | string | No | Source or author of the learning |
+| `pr` | string | No | Related PR reference (e.g., 'repo/project#123') |
+| `file` | string | No | Related file reference (e.g., 'path/to/file.py:10-20') |
+| `timestamp` | string | No | ISO format timestamp (auto-generated if not provided) |
 
-settings = get_settings()
-storage = LearningStorage(settings)
-retriever = LearningRetriever(storage, settings)
+## Querying the Knowledge Base
 
-def inject_learnings_node(state):
-    """LangGraph node that injects learnings into review context."""
-    pr_context = state["pr_description"]
-    changed_files = state["changed_files"]
-    repo_name = state["repo_name"]
-    
-    # Retrieve relevant learnings
-    learnings = retriever.get_learnings_for_pr_context(
-        pr_description=pr_context,
-        changed_files=changed_files,
-        repo_name=repo_name,
-        k=5
-    )
-    
-    # Format for prompt injection
-    context = retriever.format_for_context(learnings)
-    
-    # Add to state
-    state["learnings_context"] = context
-    return state
-
-# Add to your LangGraph workflow
-workflow = StateGraph(...)
-workflow.add_node("inject_learnings", inject_learnings_node)
-```
-
-### With Review Agent
-
-```python
-import requests
-
-def get_learnings_for_review(pr_description, changed_files, repo_name):
-    """Fetch learnings to inject into review prompt."""
-    response = requests.post(
-        "http://localhost:8000/learnings/pr-context",
-        json={
-            "pr_description": pr_description,
-            "changed_files": changed_files,
-            "repo_name": repo_name,
-            "k": 5
-        }
-    )
-    return response.json()
-
-# In your review flow:
-learnings = get_learnings_for_review(
-    pr_description="Fix auth bug",
-    changed_files=["src/auth.py"],
-    repo_name="acme/backend"
-)
-
-# Inject into LLM prompt:
-prompt = f"""
-{base_review_prompt}
-
-## Past Project Learnings:
-{format_learnings(learnings)}
-
-Now review this PR...
-"""
-```
-
-## 🧪 Testing
-
-### Health Check
+Use the `main.py` script to query stored learnings:
 
 ```bash
-# API health
-curl http://localhost:8000/health
-
-# Worker health
-curl http://localhost:8000/worker-health
-
-# Collection stats
-curl http://localhost:8000/stats
+uv run python main.py
 ```
 
-### Manual Testing
+Or use it programmatically:
 
 ```python
-# Test extraction
-from extractor import LearningExtractor
-from config import get_settings
+from main import query_knowledge_base
 
-settings = get_settings()
-extractor = LearningExtractor(settings)
-
-learning = extractor.extract_learning(
-    raw_comment="Always validate user input before database queries.",
-    code_snippet="db.query(user_input)",
-    language="python"
-)
-print(learning)
-# Output: "The project requires input validation before database operations to prevent injection attacks."
+response = query_knowledge_base("What are the best practices for dependency management?")
+print(response)
 ```
 
-## 📊 Monitoring
+## Project Structure
 
-- **API Docs**: http://localhost:8000/docs
-- **Stats Endpoint**: http://localhost:8000/stats
-- **Celery Flower** (optional): Install and run for worker monitoring
-  ```bash
-  pip install flower
-  celery -A celery_worker flower --port=5555
-  ```
+```
+knowledge-base/
+├── app.py                 # FastAPI application
+├── celery_app.py         # Celery configuration
+├── tasks.py              # Celery tasks
+├── config.py             # Configuration settings
+├── main.py               # Query interface
+├── elastic/
+│   └── hybrid_search.py  # Elasticsearch setup
+├── pyproject.toml        # Project dependencies
+└── README.md
+```
 
-## 🎨 Design Principles
+## API Documentation
 
-This implementation follows CodeRabbit's architecture:
+Once the API is running, visit:
 
-1. **Separation of Concerns**: Clear module boundaries for extraction, storage, retrieval
-2. **Async Processing**: Non-blocking ingestion via Celery
-3. **Rich Metadata**: Store context (repo, PR, file, feedback) for intelligent filtering
-4. **Semantic Search**: Vector embeddings enable finding similar learnings by meaning
-5. **Confidence Scoring**: Weight learnings by feedback type and quality signals
-6. **Context Injection**: Format learnings for easy LLM prompt integration
-7. **Scalability**: Stateless API, distributed workers, vector DB
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
-## 🔮 Future Enhancements
+## Environment Variables
 
-- [ ] Add relational DB for structured queries (PostgreSQL with pgvector)
-- [ ] Implement learning deduplication and merging
-- [ ] Add learning lifecycle (draft → approved → archived)
-- [ ] Implement user feedback collection endpoint
-- [ ] Add analytics dashboard for learning insights
-- [ ] Support multi-tenancy with organization isolation
-- [ ] Add learning quality scoring model
-- [ ] Implement A/B testing for learning effectiveness
-- [ ] Add export/import for learning migration
+See `.env.example` for all available configuration options:
 
-## 📝 License
+- `ELASTICSEARCH_URL`: Elasticsearch connection URL
+- `INDEX_NAME`: Elasticsearch index name
+- `REDIS_URL`: Redis connection URL
+- `OPENAI_API_KEY`: Your OpenAI API key
+- `OPENAI_EMBEDDING_MODEL`: Embedding model (default: text-embedding-3-small)
+- `OPENAI_CHAT_MODEL`: Chat model for queries (default: gpt-4)
+- `API_HOST`: API server host (default: 0.0.0.0)
+- `API_PORT`: API server port (default: 8000)
 
-MIT License - See LICENSE file for details
+## Development
 
-## 🤝 Contributing
+### Install Development Dependencies
 
-This is a reference implementation. Feel free to adapt for your needs.
+```bash
+uv sync --dev
+```
 
----
+### Run Tests
 
-**Built with ❤️ inspired by CodeRabbit's learning architecture**
+```bash
+uv run pytest
+```
+
+## Troubleshooting
+
+### Celery worker not processing tasks
+
+- Ensure Redis is running: `redis-cli ping`
+- Check Celery worker logs for errors
+- Verify `CELERY_BROKER_URL` in `.env` matches your Redis instance
+
+### Elasticsearch connection errors
+
+- Ensure Elasticsearch is running: `curl http://localhost:9200`
+- Verify `ELASTICSEARCH_URL` in `.env`
+- Check Elasticsearch logs
+
+### OpenAI API errors
+
+- Verify your `OPENAI_API_KEY` is valid
+- Check your OpenAI API usage limits
+- Ensure you have access to the embedding model specified
+
+## License
+
+MIT
