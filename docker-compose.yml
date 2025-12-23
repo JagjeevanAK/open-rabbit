@@ -1,19 +1,67 @@
 services:
-  bot:
-    image: ghcr.io/jagjeevanak/open-rabbit-bot:latest
-    container_name: open-rabbit-bot
+  postgres:
+    image: postgres:16-alpine
+    container_name: open-rabbit-postgres
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
-      - APP_ID=${GITHUB_APP_ID}
-      - PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
-      - WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
-      - WEBHOOK_PROXY_URL=${WEBHOOK_PROXY_URL}
-      - BACKEND_URL=${BACKEND_URL}
-      - NODE_ENV=production
+      POSTGRES_USER: ${POSTGRES_USER:-openrabbit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openrabbit}
+      POSTGRES_DB: ${POSTGRES_DB:-openrabbit}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openrabbit}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
     networks:
       - open-rabbit-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: open-rabbit-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - open-rabbit-network
+
+  elasticsearch:
+    image: elasticsearch:8.16.0
+    container_name: open-rabbit-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - open-rabbit-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
 
 networks:
   open-rabbit-network:
