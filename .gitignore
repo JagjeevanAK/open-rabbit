@@ -4,3 +4,12 @@
 /temp
 /sample
 test.txt
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Test files
+backend/test.db
+bot/test-output/
+comment-test.log
