@@ -3,9 +3,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 import os
 
-DB_URL = os.environ.get("DB_URL") or ""
+DB_URL = os.environ.get("DB_URL") or os.environ.get("DATABASE_URL") or ""
 
-engine = create_engine(DB_URL)
+# Use SQLite for testing if no DB_URL is set
+if not DB_URL:
+    DB_URL = "sqlite:///./test.db"
+
+engine = create_engine(DB_URL, connect_args={"check_same_thread": False} if "sqlite" in DB_URL else {})
 
 SessionLocal = sessionmaker(autoflush=False, autocommit=False, bind=engine)
 
