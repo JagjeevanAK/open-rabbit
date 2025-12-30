@@ -3,7 +3,7 @@ Semantic Graph Module
 Provides semantic analysis and knowledge graph construction for source code
 """
 
-from semantic.semantic_builder import (
+from agent.parsers.semantic.semantic_builder import (
     SemanticNode,
     SemanticEdge,
     EdgeType,
@@ -22,4 +22,3 @@ __all__ = [
     "build_semantic_graph_from_ast",
     "build_semantic_graph_from_all",
 ]
-

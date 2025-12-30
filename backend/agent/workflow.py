@@ -1,8 +1,24 @@
 """
-Code Review Workflow
+Code Review Workflow (DEPRECATED)
 
-Orchestrates the code review pipeline using Parsers (AST + Semantic analysis).
-Integrates with Knowledge Base for learning-enhanced reviews.
+⚠️ DEPRECATED: This module is deprecated and will be removed in a future version.
+Use the new multi-agent system instead:
+
+    from agent import SupervisorAgent, ReviewRequest, SupervisorConfig
+    
+    config = SupervisorConfig(use_mock=True)
+    supervisor = SupervisorAgent(config=config)
+    output, checkpoint = supervisor.run(request)
+
+The new system provides:
+- Multi-agent architecture (Parser, Review, Reducer, KB Filter)
+- Better security scanning with 13+ patterns
+- Complexity analysis
+- Knowledge Base integration for filtering
+- Checkpointing and resumability
+- Structured output for GitHub
+
+Legacy: Orchestrates the code review pipeline using Parsers (AST + Semantic analysis).
 """
 
 import os
@@ -10,14 +26,28 @@ import sys
 import tempfile
 import subprocess
 import logging
+import warnings
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from .mock_llm import MockLLM
-from .services.kb_client import get_kb_client
+
+# Emit deprecation warning on import
+warnings.warn(
+    "CodeReviewWorkflow is deprecated. Use SupervisorAgent from agent module instead. "
+    "See agent/__init__.py for the new multi-agent API.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 logger = logging.getLogger(__name__)
+
+# Try to import KB client, but don't fail if not available
+try:
+    from .services.kb_client import get_kb_client
+except ImportError:
+    get_kb_client = lambda: type('MockKB', (), {'enabled': False})()
 
 # Add Parsers directory to path
 PARSERS_DIR = Path(__file__).parent.parent.parent / "Parsers"

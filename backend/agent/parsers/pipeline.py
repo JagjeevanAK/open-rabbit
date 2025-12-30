@@ -7,9 +7,9 @@ import json
 from typing import Dict, Optional, Any, Union
 from pathlib import Path
 
-from ast_module.ast_parser import parse_code, parse_file
-from semantic.semantic_builder import build_semantic_graph_from_ast, SemanticGraph
-from analysis_reports import generate_ast_report, generate_semantic_report
+from agent.parsers.ast_module.ast_parser import parse_code, parse_file
+from agent.parsers.semantic.semantic_builder import build_semantic_graph_from_ast, SemanticGraph
+from agent.parsers.analysis_reports import generate_ast_report, generate_semantic_report
 
 
 class AnalysisPipeline:
@@ -38,7 +38,7 @@ class AnalysisPipeline:
         
         self.language = language
         self.ast_tree = None
-        self.semantic = None
+        self.semantic: Optional[SemanticGraph] = None
         self.source_code: Optional[bytes] = None
         self.source_path: Optional[Path] = None
         
@@ -288,25 +288,3 @@ def analyze_file(file_path: str, language: Optional[str] = None, output_dir: Uni
     
     pipeline = AnalysisPipeline(language)
     return pipeline.run_pipeline_on_file(file_path, output_dir=output_dir)
-
-
-if __name__ == "__main__":
-    print("Running Analysis Pipeline (AST + Semantic)\n")
-    
-    python_code = """
-def calculate_sum(n):
-    total = 0
-    for i in range(n):
-        if i % 2 == 0:
-            total += i
-    return total
-
-result = calculate_sum(10)
-print(result)
-"""
-    
-    pipeline = AnalysisPipeline("python")
-    pipeline.run_full_pipeline(python_code)
-    pipeline.print_summary()
-    pipeline.export_visualizations("./output")
-    pipeline.export_to_json("./output/analysis.json")
