@@ -2,6 +2,7 @@
 Code Review Workflow
 
 Orchestrates the code review pipeline using Parsers (AST + Semantic analysis).
+Integrates with Knowledge Base for learning-enhanced reviews.
 """
 
 import os
@@ -14,6 +15,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from .mock_llm import MockLLM
+from .services.kb_client import get_kb_client
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +30,11 @@ class CodeReviewWorkflow:
     
     Pipeline:
     1. Clone/access repository
-    2. Run AST analysis on changed files
-    3. Run Semantic analysis on changed files
-    4. Generate review using LLM (mocked for testing)
-    5. Format output for GitHub
+    2. Fetch relevant learnings from Knowledge Base
+    3. Run AST analysis on changed files
+    4. Run Semantic analysis on changed files
+    5. Generate review using LLM (with KB context)
+    6. Format output for GitHub
     """
     
     def __init__(self, use_mock_llm: bool = True):
@@ -44,6 +47,7 @@ class CodeReviewWorkflow:
         self.use_mock_llm = use_mock_llm
         self.llm = MockLLM() if use_mock_llm else None
         self._pipeline = None
+        self.kb_client = get_kb_client()
     
     def _get_pipeline(self):
         """Lazy load the analysis pipeline"""
@@ -55,6 +59,57 @@ class CodeReviewWorkflow:
                 logger.error(f"Failed to import AnalysisPipeline: {e}")
                 raise
         return self._pipeline
+    
+    def _fetch_kb_context(
+        self,
+        owner: str,
+        repo: str,
+        pr_description: Optional[str],
+        changed_files: Optional[List[str]]
+    ) -> Dict[str, Any]:
+        """
+        Fetch relevant learnings from Knowledge Base for PR context.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            pr_description: PR title/description
+            changed_files: List of changed file paths
+            
+        Returns:
+            Dict with learnings and formatted context
+        """
+        kb_context = {
+            "learnings": [],
+            "formatted_context": "",
+            "kb_enabled": self.kb_client.enabled
+        }
+        
+        if not self.kb_client.enabled:
+            logger.info("KB disabled, skipping context fetch")
+            return kb_context
+        
+        try:
+            # Get PR context learnings
+            learnings = self.kb_client.get_pr_context_learnings(
+                owner=owner,
+                repo=repo,
+                pr_description=pr_description or "",
+                changed_files=changed_files or [],
+                k=10
+            )
+            
+            kb_context["learnings"] = learnings
+            kb_context["formatted_context"] = self.kb_client.format_learnings_for_prompt(
+                learnings, max_learnings=5
+            )
+            
+            logger.info(f"Fetched {len(learnings)} learnings from KB for {owner}/{repo}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to fetch KB context: {e}")
+        
+        return kb_context
     
     def review_pull_request(
         self,
@@ -83,6 +138,17 @@ class CodeReviewWorkflow:
         logger.info(f"Starting review for {repo_url} (PR #{pr_number})")
         
         try:
+            # Parse owner/repo from URL
+            owner, repo = self._parse_repo_url(repo_url)
+            
+            # Fetch KB context first
+            kb_context = self._fetch_kb_context(
+                owner=owner,
+                repo=repo,
+                pr_description=pr_description,
+                changed_files=changed_files
+            )
+            
             repo_path = self._clone_repository(repo_url, branch)
             
             if not changed_files:
@@ -101,10 +167,19 @@ class CodeReviewWorkflow:
                 file_analysis = self._analyze_file(full_path)
                 analysis_results[file_path] = file_analysis
                 
-                review = self._generate_review(file_analysis, file_path)
+                # Pass KB context to review generation
+                review = self._generate_review(
+                    file_analysis, 
+                    file_path,
+                    kb_context=kb_context
+                )
                 all_reviews.append(review)
             
-            formatted_review = self._format_for_github(all_reviews, pr_description)
+            formatted_review = self._format_for_github(
+                all_reviews, 
+                pr_description,
+                kb_context=kb_context
+            )
             
             duration = (datetime.utcnow() - start_time).total_seconds()
             
@@ -118,6 +193,7 @@ class CodeReviewWorkflow:
                 "formatted_review": formatted_review,
                 "duration_seconds": duration,
                 "mock_llm": self.use_mock_llm,
+                "kb_learnings_used": len(kb_context.get("learnings", [])),
                 "unit_tests": {} if not generate_tests else self._generate_tests(changed_files, repo_path)
             }
             
@@ -130,14 +206,40 @@ class CodeReviewWorkflow:
                 "pr_number": pr_number
             }
     
-    def _generate_review(self, analysis: Dict, file_path: str) -> Dict[str, Any]:
-        """Generate review for a file using LLM"""
+    def _parse_repo_url(self, repo_url: str) -> tuple:
+        """Parse owner and repo from URL or shorthand."""
+        # Handle shorthand (owner/repo)
+        if "/" in repo_url and not repo_url.startswith("http"):
+            parts = repo_url.split("/")
+            return parts[0], parts[1].replace(".git", "")
+        
+        # Handle full URL
+        if "github.com" in repo_url:
+            parts = repo_url.rstrip("/").rstrip(".git").split("/")
+            return parts[-2], parts[-1]
+        
+        return "unknown", "unknown"
+    
+    def _generate_review(
+        self, 
+        analysis: Dict, 
+        file_path: str,
+        kb_context: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Generate review for a file using LLM with KB context"""
         if self.use_mock_llm:
-            return self.llm.generate_review(
+            review = self.llm.generate_review(
                 ast_data=analysis.get("ast"),
                 semantic_data=analysis.get("semantic"),
                 file_path=file_path
             )
+            
+            # Add KB context to the review if available
+            if kb_context and kb_context.get("learnings"):
+                review["kb_context_applied"] = True
+                review["learnings_considered"] = len(kb_context["learnings"])
+            
+            return review
         raise NotImplementedError("Real LLM integration not yet implemented")
     
     def _clone_repository(self, repo_url: str, branch: Optional[str] = None) -> str:
@@ -210,7 +312,12 @@ class CodeReviewWorkflow:
             return {}
         return {"type": "semantic_summary", "nodes": [], "relations": []}
     
-    def _format_for_github(self, reviews: List[Dict], pr_description: Optional[str] = None) -> Dict[str, Any]:
+    def _format_for_github(
+        self, 
+        reviews: List[Dict], 
+        pr_description: Optional[str] = None,
+        kb_context: Optional[Dict] = None
+    ) -> Dict[str, Any]:
         """Format review results as GitHub PR review format"""
         comments = []
         total_issues = 0
@@ -227,12 +334,22 @@ class CodeReviewWorkflow:
                     "body": self._format_issue_body(issue)
                 })
         
-        summary = self._build_summary(reviews, total_issues)
+        summary = self._build_summary(reviews, total_issues, kb_context)
         return {"summary": summary, "comments": comments}
     
-    def _build_summary(self, reviews: List[Dict], total_issues: int) -> str:
+    def _build_summary(
+        self, 
+        reviews: List[Dict], 
+        total_issues: int,
+        kb_context: Optional[Dict] = None
+    ) -> str:
         """Build summary text for the review"""
         parts = [f"**🤖 Open Rabbit Review**\n", f"Analyzed {len(reviews)} file(s), found {total_issues} issue(s).\n"]
+        
+        # Add KB learnings info if available
+        if kb_context and kb_context.get("learnings"):
+            num_learnings = len(kb_context["learnings"])
+            parts.append(f"\n📚 *Review enhanced with {num_learnings} relevant learning(s) from past feedback.*\n")
         
         if total_issues > 0:
             severity_counts = {}

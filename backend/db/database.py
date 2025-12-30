@@ -3,9 +3,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 import os
 
-DB_URL = os.environ.get("DB_URL") or ""
+# Use DATABASE_URL environment variable (PostgreSQL required)
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-engine = create_engine(DB_URL)
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is required")
+
+engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autoflush=False, autocommit=False, bind=engine)
 

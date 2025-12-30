@@ -8,6 +8,7 @@ import manualTrigger from "./comment.js";
 import enhancedPullRequest from "./enhancedPullRequest.js";
 import newInstallation from "./newInstallation.js";
 import unitTest from "./unitTest.js";
+import feedbackHandler from "./feedbackHandler.js";
 
 export default (app: Probot, options: any) => {
   // Load manual trigger routes for external API access
@@ -21,6 +22,9 @@ export default (app: Probot, options: any) => {
 
   // Load unit test generation handler
   unitTest(app);
+
+  // Load feedback handler for KB learning loop
+  feedbackHandler(app);
 
   // For more information on building apps:
   // https://probot.github.io/docs/
