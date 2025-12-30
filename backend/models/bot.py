@@ -15,8 +15,12 @@ class ReviewRequest(BaseModel):
     pr_number: int = Field(..., description="Pull request number")
     branch: str = Field(..., description="Branch to review")
     changed_files: Optional[List[str]] = Field(None, description="List of changed files")
-    installation_id: int = Field(..., description="GitHub App installation ID")
+    installation_id: int = Field(0, description="GitHub App installation ID (0 for test mode)")
     comment_id: Optional[int] = Field(None, description="Comment ID that triggered the review")
+    
+    # Test mode flags
+    test_mode: bool = Field(False, description="If true, use test endpoints (PAT auth)")
+    dry_run: bool = Field(True, description="If true, save results to file instead of posting")
 
 
 class UnitTestRequest(BaseModel):

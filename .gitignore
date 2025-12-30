@@ -1,3 +1,6 @@
 .cursor
 *__pycache__
-*.env
+*.envtemp/
+/temp
+/sample
+test.txt
