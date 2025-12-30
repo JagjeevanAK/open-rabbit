@@ -1,3 +1,16 @@
 .cursor
 *__pycache__
 *.env
+
+# Test files
+*.db
+test.txt
+comment-test.log
+bot/test-output/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
