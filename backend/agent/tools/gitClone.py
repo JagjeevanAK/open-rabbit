@@ -1,9 +1,14 @@
 import subprocess
 import os
 import re
+import shutil
+import tempfile
+import logging
 from pathlib import Path
 from typing import Optional
 from langchain_core.tools import tool
+
+logger = logging.getLogger(__name__)
 
 def parse_github_url(repo_input: str) -> tuple[str, str]:
     """
@@ -122,3 +127,137 @@ def git_clone_tool(
         return f"Error: Permission denied. Cannot write to destination path."
     except Exception as e:
         return f"Error: {type(e).__name__}: {str(e)}"
+
+
+async def clone_repo_for_pr(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    branch: str,
+    installation_id: int,
+    base_dir: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Clone a repository for PR review.
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        pr_number: Pull request number
+        branch: Branch to clone
+        installation_id: GitHub App installation ID (for authentication)
+        base_dir: Base directory for clones (uses temp dir if None)
+        
+    Returns:
+        Path to cloned repository, or None on failure
+    """
+    try:
+        # Create a temp directory for the clone
+        if base_dir:
+            clone_base = Path(base_dir)
+            clone_base.mkdir(parents=True, exist_ok=True)
+        else:
+            clone_base = Path(tempfile.gettempdir()) / "open-rabbit-clones"
+            clone_base.mkdir(parents=True, exist_ok=True)
+        
+        # Create unique directory for this clone
+        clone_dir = clone_base / f"{owner}-{repo}-{pr_number}-{os.getpid()}"
+        
+        # Clean up if exists
+        if clone_dir.exists():
+            shutil.rmtree(clone_dir)
+        
+        # Build clone URL
+        # For GitHub App authentication, we'd need to get an installation token
+        # For now, use public HTTPS URL (works for public repos)
+        clone_url = f"https://github.com/{owner}/{repo}.git"
+        
+        # TODO: For private repos, get installation access token:
+        # token = await get_installation_token(installation_id)
+        # clone_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
+        
+        logger.info(f"Cloning {owner}/{repo} branch {branch} to {clone_dir}")
+        
+        # Clone with shallow depth
+        cmd = [
+            "git", "clone",
+            "--depth", "1",
+            "--branch", branch,
+            clone_url,
+            str(clone_dir)
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"Git clone failed: {result.stderr}")
+            return None
+        
+        logger.info(f"Successfully cloned to {clone_dir}")
+        return str(clone_dir)
+        
+    except subprocess.TimeoutExpired:
+        logger.error("Clone operation timed out")
+        return None
+    except Exception as e:
+        logger.error(f"Clone failed: {e}")
+        return None
+
+
+def cleanup_repo(repo_path: str) -> bool:
+    """
+    Clean up a cloned repository.
+    
+    Args:
+        repo_path: Path to the repository to clean up
+        
+    Returns:
+        True if cleanup succeeded, False otherwise
+    """
+    try:
+        path = Path(repo_path)
+        if path.exists():
+            shutil.rmtree(path)
+            logger.info(f"Cleaned up repository at {repo_path}")
+            return True
+        return True
+    except Exception as e:
+        logger.error(f"Failed to cleanup repository: {e}")
+        return False
+
+
+def get_changed_files_from_diff(repo_path: str, base_branch: str = "main") -> list[str]:
+    """
+    Get list of changed files by comparing with base branch.
+    
+    Args:
+        repo_path: Path to the repository
+        base_branch: Base branch to compare against
+        
+    Returns:
+        List of changed file paths
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"origin/{base_branch}...HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=repo_path,
+            timeout=60
+        )
+        
+        if result.returncode != 0:
+            logger.warning(f"Failed to get diff: {result.stderr}")
+            return []
+        
+        files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+        return files
+        
+    except Exception as e:
+        logger.error(f"Failed to get changed files: {e}")
+        return []

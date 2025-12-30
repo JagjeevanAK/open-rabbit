@@ -1,6 +1,7 @@
 .cursor
 *__pycache__
-*.envtemp/
+*.env
+temp/
 /temp
 /sample
 test.txt
@@ -10,6 +11,11 @@ test.txt
 **/.DS_Store
 
 # Test files
+*.db
 backend/test.db
 bot/test-output/
 comment-test.log
+
+# IDE
+.vscode/
+.idea/

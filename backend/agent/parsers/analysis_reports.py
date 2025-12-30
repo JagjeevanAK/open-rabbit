@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set
 
-from semantic.semantic_builder import SemanticGraph, EdgeType
+from agent.parsers.semantic.semantic_builder import SemanticGraph, EdgeType
 
 
 def _node_text(node: Any, source_code: Optional[bytes]) -> str:

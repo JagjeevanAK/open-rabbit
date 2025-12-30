@@ -61,7 +61,8 @@ export class KnowledgeBaseService {
       },
     });
 
-    this.enabled = process.env.ENABLE_KNOWLEDGE_BASE !== 'false';
+    // KB_ENABLED=true to enable, anything else (or missing) disables
+    this.enabled = process.env.KB_ENABLED === 'true';
   }
 
   async healthCheck(): Promise<boolean> {
@@ -95,33 +96,30 @@ export class KnowledgeBaseService {
     if (!this.enabled) return null;
 
     try {
-      const request: IngestionRequest = {
-        comment: {
-          comment_id: commentData.commentId,
-          raw_comment: commentData.comment,
-          code_snippet: commentData.codeSnippet,
-          language: commentData.language,
-          feedback_type: commentData.feedbackType,
-          source: {
-            repo_name: commentData.repoName,
-            pr_number: commentData.prNumber,
-            pr_title: commentData.prTitle,
-            file_path: commentData.filePath,
-            author: commentData.author,
-            reviewer: commentData.reviewer,
-            timestamp: new Date().toISOString(),
-          },
-        },
-        async_processing: true,
+      // Format payload to match KB service's LearningRequest schema
+      const learningText = commentData.userResponse 
+        ? `[${commentData.feedbackType || 'feedback'}] ${commentData.comment} | User response: ${commentData.userResponse}`
+        : `[review] ${commentData.comment}`;
+      
+      const payload = {
+        learning: learningText,
+        learnt_from: commentData.reviewer || commentData.author,
+        pr: `${commentData.repoName}#${commentData.prNumber}`,
+        file: commentData.filePath,
+        timestamp: new Date().toISOString(),
       };
 
-      const response = await this.client.post<IngestionResponse>(
-        '/learnings/ingest',
-        request
+      const response = await this.client.post<{ status: string; message: string; task_id: string }>(
+        '/learnings',
+        payload
       );
 
       console.log(`Ingested comment to KB: ${response.data.status} (feedback: ${commentData.feedbackType || 'none'})`);
-      return response.data;
+      return {
+        task_id: response.data.task_id,
+        status: response.data.status as 'queued' | 'success' | 'skipped' | 'failed',
+        learning_id: response.data.task_id, // Use task_id as learning_id
+      };
     } catch (error) {
       console.error('Failed to ingest comment to knowledge base:', error);
       return null;
@@ -146,26 +144,22 @@ export class KnowledgeBaseService {
     if (!this.enabled || comments.length === 0) return null;
 
     try {
-      const reviewComments: ReviewComment[] = comments.map(c => ({
-        comment_id: c.commentId,
-        raw_comment: c.comment,
-        code_snippet: c.codeSnippet,
-        language: c.language,
-        feedback_type: c.feedbackType,
-        source: {
-          repo_name: c.repoName,
-          pr_number: c.prNumber,
-          pr_title: c.prTitle,
-          file_path: c.filePath,
-          author: c.author,
-          reviewer: c.reviewer,
-          timestamp: new Date().toISOString(),
-        },
+      // Format payload to match KB service's batch LearningRequest schema
+      const learnings = comments.map(c => ({
+        learning: `[${c.feedbackType || 'review'}] ${c.comment}`,
+        learnt_from: c.reviewer || c.author,
+        pr: `${c.repoName}#${c.prNumber}`,
+        file: c.filePath,
+        timestamp: new Date().toISOString(),
       }));
 
-      const response = await this.client.post('/learnings/ingest/batch', reviewComments);
+      await this.client.post('/learnings/batch', learnings);
       console.log(`Batch ingested ${comments.length} comments to KB`);
-      return response.data;
+      return {
+        task_id: 'batch',
+        status: 'queued',
+        total_comments: comments.length,
+      };
     } catch (error) {
       console.error('Failed to batch ingest comments:', error);
       return null;
