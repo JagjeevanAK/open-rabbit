@@ -1,599 +1,1088 @@
 """
 Supervisor Agent
 
-The main orchestration agent that coordinates the multi-agent code review pipeline:
-1. Parser Agent - Static analysis (AST, security, complexity)
-2. Review Agent - LLM-powered code review
-3. Reducer - Merge and deduplicate issues
-4. KB Filter - Filter based on past learnings
+Main orchestrator for the multi-agent code review system.
+Implements a LangGraph state machine with:
+- Checkpointing for restart capability (database + memory)
+- Async agent execution
+- Knowledge Base integration
+- Comprehensive production logging
 
-This agent manages the full lifecycle of a PR review.
+The Supervisor:
+- Owns global context
+- Has exclusive access to Knowledge Base
+- Decides which sub-agents to invoke
+- Aggregates results into single structured output
 """
 
+import asyncio
+import json
 import os
+import uuid
 import time
-import logging
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Annotated, TypedDict, Sequence, Callable
 
-from agent.subagents.base_agent import BaseAgent
-from agent.subagents.parser_agent import ParserAgent
-from agent.subagents.review_agent import ReviewAgent
-from agent.supervisor.reducer import Reducer
-from agent.supervisor.kb_filter import KBFilter
-from agent.services.kb_client import KnowledgeBaseClient, get_kb_client
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import BaseMessage, HumanMessage
 
-from agent.schemas.common import (
-    AgentStatus,
-    AgentCheckpoint,
+from ..schemas.common import (
     ReviewRequest,
-    ReviewIssue,
-    SupervisorConfig,
     SupervisorOutput,
-    FilterResult,
+    UserIntent,
+    IntentType,
     KBContext,
-    Severity,
-    IssueCategory,
+    FileInfo,
+    AgentStatus,
+    CheckpointData,
+    AgentResult,
 )
-from agent.schemas.parser_output import ParserInput, ParserOutput, FileAnalysis
-from agent.schemas.review_output import ReviewInput, ReviewOutput
+from ..schemas.parser_output import ParserOutput
+from ..schemas.review_output import ReviewOutput
+from ..schemas.test_output import TestOutput
+from ..subagents.parser_agent import ParserAgent
+from ..subagents.review_agent import CodeReviewAgent, MockCodeReviewAgent
+from ..subagents.unit_test_agent import UnitTestAgent, MockUnitTestAgent
+from ..llm_factory import LLMFactory, LLMProvider
+from ..services.kb_client import KBClient, KBClientConfig
+from .intent_parser import IntentParser
+from .result_aggregator import ResultAggregator
+
+# Import production logging
+from ..logging_config import (
+    get_logger,
+    set_session_id,
+    get_session_id,
+    log_with_data,
+    timed,
+    AsyncLogContext,
+    log_workflow_transition,
+    log_agent_start,
+    log_agent_complete,
+    log_checkpoint_saved,
+    log_checkpoint_restored,
+    setup_logging,
+)
+
+# Initialize logging
+setup_logging()
+logger = get_logger(__name__)
 
 
-logger = logging.getLogger(__name__)
-
-
-class SupervisorAgent(BaseAgent[ReviewRequest, SupervisorOutput]):
-    """
-    Supervisor Agent orchestrates the multi-agent code review pipeline.
+@dataclass
+class SupervisorConfig:
+    """Configuration for the Supervisor Agent."""
+    # LLM settings
+    llm_provider: LLMProvider = LLMProvider.OPENAI
+    llm_model: Optional[str] = None
     
-    Pipeline:
-    1. Parser Agent: Analyze changed files for structure, security issues, complexity
-    2. Review Agent: LLM-powered code review with KB context enrichment
-    3. Reducer: Merge and deduplicate issues from both agents
-    4. KB Filter: Filter suggestions based on past learnings (false positives, etc.)
-    5. Generate summary and format output
+    # Knowledge Base settings
+    kb_url: Optional[str] = None
+    kb_enabled: bool = True
+    kb_elasticsearch_url: Optional[str] = None
+    
+    # Execution settings
+    timeout_seconds: float = 600.0  # 10 minutes total
+    max_retries: int = 3
+    
+    # Checkpointing - uses database for persistence
+    enable_checkpointing: bool = True
+    
+    # Mock mode for testing
+    use_mock_agents: bool = False
+
+
+# LangGraph State Definition
+class SupervisorState(TypedDict, total=False):
+    """State for the LangGraph supervisor workflow."""
+    # Input
+    request: Dict[str, Any]  # Serialized ReviewRequest
+    session_id: str
+    
+    # Parsed intent
+    intent: Dict[str, Any]  # Serialized UserIntent
+    
+    # Knowledge Base context
+    kb_context: Dict[str, Any]  # Serialized KBContext
+    
+    # Agent outputs
+    parser_output: Dict[str, Any]
+    review_output: Dict[str, Any]
+    test_output: Dict[str, Any]
+    
+    # Agent results with status
+    parser_result: Dict[str, Any]
+    review_result: Dict[str, Any]
+    test_result: Dict[str, Any]
+    
+    # Workflow control
+    current_step: str
+    completed_steps: List[str]
+    errors: List[str]
+    
+    # Final output
+    final_output: Dict[str, Any]
+    
+    # Timing
+    started_at: str
+    completed_at: str
+
+
+class SupervisorAgent:
+    """
+    Main Supervisor Agent using LangGraph for orchestration.
     
     Features:
-    - Checkpointing for resumability
-    - Parallel file parsing
-    - KB integration for context and filtering
-    - Configurable via SupervisorConfig
+    - Async execution of sub-agents
+    - Checkpointing for restart capability
+    - Knowledge Base integration
+    - Graceful error handling
     """
     
-    def __init__(
-        self,
-        config: Optional[SupervisorConfig] = None,
-        kb_client: Optional[KnowledgeBaseClient] = None,
-    ):
+    def __init__(self, config: Optional[SupervisorConfig] = None):
         """
-        Initialize supervisor agent.
+        Initialize the Supervisor Agent.
         
         Args:
-            config: Supervisor configuration (uses defaults if None)
-            kb_client: Knowledge Base client (uses global if None)
+            config: Supervisor configuration
         """
         self.config = config or SupervisorConfig()
-        super().__init__(enable_checkpointing=self.config.enable_checkpointing)
         
-        self.kb_client = kb_client
+        # Initialize components
+        self.intent_parser = IntentParser()
+        self.aggregator = ResultAggregator()
+        
+        # Initialize KB client
+        kb_config = KBClientConfig(
+            base_url=self.config.kb_url or os.getenv("KB_SERVICE_URL", "http://localhost:8000"),
+            elasticsearch_url=self.config.kb_elasticsearch_url or os.getenv("ELASTICSEARCH_URL"),
+        )
+        self._kb_client = KBClient(kb_config)
+        
+        # Initialize sub-agents (lazy loaded)
         self._parser_agent: Optional[ParserAgent] = None
-        self._review_agent: Optional[ReviewAgent] = None
-        self._reducer: Optional[Reducer] = None
-        self._kb_filter: Optional[KBFilter] = None
+        self._review_agent: Optional[CodeReviewAgent] = None
+        self._test_agent: Optional[UnitTestAgent] = None
         
-        self._logger = logging.getLogger("agent.supervisor")
+        # Checkpointing
+        self._checkpointer = MemorySaver() if self.config.enable_checkpointing else None
+        
+        # Build the workflow graph
+        self._graph = self._build_graph()
+        self._compiled_graph = None
     
     @property
-    def name(self) -> str:
-        return "supervisor"
-    
-    def _get_parser_agent(self) -> ParserAgent:
-        """Get or create Parser Agent."""
+    def parser_agent(self) -> ParserAgent:
+        """Lazy-load parser agent."""
         if self._parser_agent is None:
-            self._parser_agent = ParserAgent(
-                enable_checkpointing=self.config.enable_checkpointing,
-                max_workers=4 if self.config.parallel_parsing else 1,
-            )
+            self._parser_agent = ParserAgent()
         return self._parser_agent
     
-    def _get_review_agent(self) -> ReviewAgent:
-        """Get or create Review Agent."""
+    @property
+    def review_agent(self) -> CodeReviewAgent:
+        """Lazy-load review agent."""
         if self._review_agent is None:
-            self._review_agent = ReviewAgent(
-                enable_checkpointing=self.config.enable_checkpointing,
-                llm_provider=self.config.llm_provider,
-                llm_model=self.config.llm_model,
-                use_mock=self.config.use_mock,
-                kb_client=self.kb_client,
-            )
+            if self.config.use_mock_agents:
+                self._review_agent = MockCodeReviewAgent()
+            else:
+                self._review_agent = CodeReviewAgent(
+                    provider=self.config.llm_provider,
+                    model=self.config.llm_model,
+                )
         return self._review_agent
     
-    def _get_reducer(self) -> Reducer:
-        """Get or create Reducer."""
-        if self._reducer is None:
-            self._reducer = Reducer()
-        return self._reducer
+    @property
+    def test_agent(self) -> UnitTestAgent:
+        """Lazy-load test agent."""
+        if self._test_agent is None:
+            if self.config.use_mock_agents:
+                self._test_agent = MockUnitTestAgent()
+            else:
+                self._test_agent = UnitTestAgent(
+                    provider=self.config.llm_provider,
+                    model=self.config.llm_model,
+                )
+        return self._test_agent
     
-    def _get_kb_filter(self) -> KBFilter:
-        """Get or create KB Filter."""
-        if self._kb_filter is None:
-            self._kb_filter = KBFilter(
-                kb_client=self.kb_client,
-                confidence_threshold=self.config.kb_confidence_threshold,
+    @property
+    def compiled_graph(self):
+        """Get or compile the graph."""
+        if self._compiled_graph is None:
+            self._compiled_graph = self._graph.compile(
+                checkpointer=self._checkpointer
             )
-        return self._kb_filter
+        return self._compiled_graph
     
-    def _get_kb_client(self) -> Optional[KnowledgeBaseClient]:
-        """Get KB client if enabled."""
-        if not self.config.kb_enabled:
-            return None
+    def _build_graph(self) -> StateGraph:
+        """Build the LangGraph state machine."""
+        graph = StateGraph(SupervisorState)
         
-        if self.kb_client:
-            return self.kb_client
+        # Add nodes for each step
+        graph.add_node("parse_intent", self._node_parse_intent)
+        graph.add_node("fetch_kb", self._node_fetch_kb)
+        graph.add_node("run_parser", self._node_run_parser)
+        graph.add_node("run_review", self._node_run_review)
+        graph.add_node("run_tests", self._node_run_tests)
+        graph.add_node("aggregate", self._node_aggregate)
+        
+        # Define edges
+        graph.set_entry_point("parse_intent")
+        graph.add_edge("parse_intent", "fetch_kb")
+        graph.add_edge("fetch_kb", "run_parser")
+        
+        # Conditional edge from parser to review or tests
+        graph.add_conditional_edges(
+            "run_parser",
+            self._route_after_parser,
+            {
+                "review": "run_review",
+                "tests": "run_tests",
+                "aggregate": "aggregate",
+            }
+        )
+        
+        # Conditional edge from review
+        graph.add_conditional_edges(
+            "run_review",
+            self._route_after_review,
+            {
+                "tests": "run_tests",
+                "aggregate": "aggregate",
+            }
+        )
+        
+        # Tests always go to aggregate
+        graph.add_edge("run_tests", "aggregate")
+        
+        # Aggregate ends the workflow
+        graph.add_edge("aggregate", END)
+        
+        return graph
+    
+    def _route_after_parser(self, state: SupervisorState) -> str:
+        """Route after parser completes."""
+        intent = state.get("intent", {})
+        
+        if intent.get("should_review", True):
+            log_workflow_transition(logger, "run_parser", "run_review", "Intent requires code review")
+            return "review"
+        elif intent.get("should_generate_tests", False):
+            log_workflow_transition(logger, "run_parser", "run_tests", "Intent requires test generation only")
+            return "tests"
+        else:
+            log_workflow_transition(logger, "run_parser", "aggregate", "No further processing needed")
+            return "aggregate"
+    
+    def _route_after_review(self, state: SupervisorState) -> str:
+        """Route after review completes."""
+        intent = state.get("intent", {})
+        
+        if intent.get("should_generate_tests", False):
+            log_workflow_transition(logger, "run_review", "run_tests", "Intent also requires test generation")
+            return "tests"
+        else:
+            log_workflow_transition(logger, "run_review", "aggregate", "Review complete, aggregating results")
+            return "aggregate"
+    
+    async def _node_parse_intent(self, state: SupervisorState) -> Dict[str, Any]:
+        """Parse user intent from request."""
+        start_time = time.perf_counter()
+        session_id = state.get("session_id", "unknown")
+        set_session_id(session_id)
+        
+        log_with_data(logger, 20, "Parsing user intent", {
+            "step": "parse_intent",
+            "session_id": session_id,
+        })
+        
+        request_dict = state.get("request", {})
+        request = ReviewRequest.from_dict(request_dict)
+        
+        intent = self.intent_parser.parse(request)
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        
+        log_with_data(logger, 20, "Intent parsed successfully", {
+            "step": "parse_intent",
+            "should_review": intent.should_review,
+            "should_generate_tests": intent.should_generate_tests,
+            "test_targets_count": len(intent.test_targets),
+            "review_scope": intent.review_scope,
+            "duration_ms": round(duration_ms, 2),
+        })
+        
+        log_checkpoint_saved(logger, session_id, "parse_intent")
+        
+        return {
+            "intent": intent.to_dict(),
+            "current_step": "intent_parsed",
+            "completed_steps": state.get("completed_steps", []) + ["parse_intent"],
+        }
+    
+    async def _node_fetch_kb(self, state: SupervisorState) -> Dict[str, Any]:
+        """Fetch Knowledge Base context."""
+        start_time = time.perf_counter()
+        session_id = state.get("session_id", "unknown")
+        
+        log_with_data(logger, 20, "Fetching Knowledge Base context", {
+            "step": "fetch_kb",
+            "kb_enabled": self.config.kb_enabled,
+            "kb_url": self.config.kb_url,
+        })
+        
+        kb_context = KBContext()
+        
+        if self.config.kb_enabled and self.config.kb_url:
+            try:
+                request_dict = state.get("request", {})
+                kb_context = await self._fetch_kb_context(request_dict)
+                
+                log_with_data(logger, 20, "KB context fetched successfully", {
+                    "step": "fetch_kb",
+                    "learnings_count": len(kb_context.learnings),
+                    "coding_style_count": len(kb_context.coding_style),
+                    "best_practices_count": len(kb_context.best_practices),
+                    "conventions_count": len(kb_context.conventions),
+                })
+            except Exception as e:
+                log_with_data(logger, 30, f"Failed to fetch KB context: {e}", {
+                    "step": "fetch_kb",
+                    "error": str(e),
+                })
+                state.get("errors", []).append(f"KB fetch failed: {str(e)}")
+        else:
+            log_with_data(logger, 20, "KB disabled or URL not configured, skipping", {
+                "step": "fetch_kb",
+            })
+        
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log_checkpoint_saved(logger, session_id, "fetch_kb")
+        
+        return {
+            "kb_context": kb_context.to_dict(),
+            "current_step": "kb_fetched",
+            "completed_steps": state.get("completed_steps", []) + ["fetch_kb"],
+        }
+    
+    async def _node_run_parser(self, state: SupervisorState) -> Dict[str, Any]:
+        """Run the Parser Agent."""
+        start_time = time.perf_counter()
+        session_id = state.get("session_id", "unknown")
+        
+        request_dict = state.get("request", {})
+        files = [FileInfo.from_dict(f) for f in request_dict.get("files", [])]
+        
+        log_agent_start(logger, "ParserAgent", len(files), 
+                       languages=list(set(f.language for f in files if f.language)))
+        
+        result = await self.parser_agent.run(files)
+        
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        output_dict = result.output.to_dict() if result.output else {}
+        
+        # Log detailed results
+        symbols_count = len(output_dict.get("symbols", [])) if output_dict else 0
+        hotspots_count = len(output_dict.get("hotspots", [])) if output_dict else 0
+        
+        log_agent_complete(logger, "ParserAgent", duration_ms, {
+            "status": result.status.value,
+            "files_parsed": len(files),
+            "symbols_found": symbols_count,
+            "hotspots_identified": hotspots_count,
+        })
+        
+        log_checkpoint_saved(logger, session_id, "run_parser")
+        
+        return {
+            "parser_output": output_dict,
+            "parser_result": result.to_dict(),
+            "current_step": "parser_complete",
+            "completed_steps": state.get("completed_steps", []) + ["run_parser"],
+        }
+    
+    async def _node_run_review(self, state: SupervisorState) -> Dict[str, Any]:
+        """Run the Code Review Agent."""
+        start_time = time.perf_counter()
+        session_id = state.get("session_id", "unknown")
+        
+        request_dict = state.get("request", {})
+        files = [FileInfo.from_dict(f) for f in request_dict.get("files", [])]
+        
+        parser_output = ParserOutput.from_dict(state.get("parser_output", {}))
+        kb_context = KBContext.from_dict(state.get("kb_context", {}))
+        
+        kb_learnings_count = (
+            len(kb_context.learnings) + 
+            len(kb_context.coding_style) + 
+            len(kb_context.best_practices)
+        )
+        
+        log_agent_start(logger, "CodeReviewAgent", len(files),
+                       model=self.config.llm_model or "default",
+                       kb_learnings=kb_learnings_count)
+        
+        result = await self.review_agent.run(
+            parsed_metadata=parser_output,
+            kb_context=kb_context,
+            files=files,
+        )
+        
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        output_dict = result.output.to_dict() if result.output else {}
+        
+        # Log detailed results
+        issues_count = output_dict.get("total_issues", 0) if output_dict else 0
+        critical_count = sum(1 for fs in output_dict.get("file_summaries", []) 
+                           for _ in range(fs.get("critical_count", 0))) if output_dict else 0
+        
+        log_agent_complete(logger, "CodeReviewAgent", duration_ms, {
+            "status": result.status.value,
+            "files_reviewed": len(files),
+            "total_issues": issues_count,
+            "critical_issues": critical_count,
+        })
+        
+        log_checkpoint_saved(logger, session_id, "run_review")
+        
+        return {
+            "review_output": output_dict,
+            "review_result": result.to_dict(),
+            "current_step": "review_complete",
+            "completed_steps": state.get("completed_steps", []) + ["run_review"],
+        }
+    
+    async def _node_run_tests(self, state: SupervisorState) -> Dict[str, Any]:
+        """Run the Unit Test Agent."""
+        start_time = time.perf_counter()
+        session_id = state.get("session_id", "unknown")
+        
+        intent_dict = state.get("intent", {})
+        request_dict = state.get("request", {})
+        
+        target_files = intent_dict.get("test_targets", [])
+        if not target_files:
+            target_files = [f["path"] for f in request_dict.get("files", [])]
+        
+        parser_output = ParserOutput.from_dict(state.get("parser_output", {}))
+        kb_context = KBContext.from_dict(state.get("kb_context", {}))
+        
+        log_agent_start(logger, "UnitTestAgent", len(target_files),
+                       model=self.config.llm_model or "default")
+        
+        result = await self.test_agent.run(
+            parsed_metadata=parser_output,
+            kb_context=kb_context,
+            target_files=target_files,
+            repo_path=request_dict.get("repo_path"),
+        )
+        
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        output_dict = result.output.to_dict() if result.output else {}
+        
+        tests_generated = len(output_dict.get("tests", [])) if output_dict else 0
+        
+        log_agent_complete(logger, "UnitTestAgent", duration_ms, {
+            "status": result.status.value,
+            "target_files": len(target_files),
+            "tests_generated": tests_generated,
+        })
+        
+        log_checkpoint_saved(logger, session_id, "run_tests")
+        
+        return {
+            "test_output": output_dict,
+            "test_result": result.to_dict(),
+            "current_step": "tests_complete",
+            "completed_steps": state.get("completed_steps", []) + ["run_tests"],
+        }
+    
+    async def _node_aggregate(self, state: SupervisorState) -> Dict[str, Any]:
+        """Aggregate all results."""
+        start_time = time.perf_counter()
+        session_id = state.get("session_id", "unknown")
+        
+        log_with_data(logger, 20, "Aggregating results from all agents", {
+            "step": "aggregate",
+            "completed_steps": state.get("completed_steps", []),
+        })
+        
+        # Reconstruct agent results
+        parser_result = None
+        review_result = None
+        test_result = None
+        
+        if state.get("parser_result"):
+            pr = state["parser_result"]
+            parser_result = AgentResult(
+                agent_name=pr["agent_name"],
+                status=AgentStatus(pr["status"]),
+                output=ParserOutput.from_dict(state.get("parser_output", {})) if state.get("parser_output") else None,
+                error=pr.get("error"),
+                started_at=pr.get("started_at"),
+                completed_at=pr.get("completed_at"),
+                duration_seconds=pr.get("duration_seconds"),
+            )
+        
+        if state.get("review_result"):
+            rr = state["review_result"]
+            review_result = AgentResult(
+                agent_name=rr["agent_name"],
+                status=AgentStatus(rr["status"]),
+                output=ReviewOutput.from_dict(state.get("review_output", {})) if state.get("review_output") else None,
+                error=rr.get("error"),
+                started_at=rr.get("started_at"),
+                completed_at=rr.get("completed_at"),
+                duration_seconds=rr.get("duration_seconds"),
+            )
+        
+        if state.get("test_result"):
+            tr = state["test_result"]
+            test_result = AgentResult(
+                agent_name=tr["agent_name"],
+                status=AgentStatus(tr["status"]),
+                output=TestOutput.from_dict(state.get("test_output", {})) if state.get("test_output") else None,
+                error=tr.get("error"),
+                started_at=tr.get("started_at"),
+                completed_at=tr.get("completed_at"),
+                duration_seconds=tr.get("duration_seconds"),
+            )
+        
+        # Merge results
+        kb_context = KBContext.from_dict(state.get("kb_context", {})) if state.get("kb_context") else None
+        intent = UserIntent.from_dict(state.get("intent", {})) if state.get("intent") else None
+        
+        final_output = self.aggregator.merge(
+            parser_result=parser_result,
+            review_result=review_result,
+            test_result=test_result,
+            kb_context=kb_context,
+            intent=intent,
+        )
+        
+        final_output.session_id = state.get("session_id")
+        final_output.started_at = state.get("started_at")
+        final_output.completed_at = datetime.utcnow().isoformat()
+        
+        return {
+            "final_output": final_output.to_dict(),
+            "current_step": "complete",
+            "completed_steps": state.get("completed_steps", []) + ["aggregate"],
+            "completed_at": final_output.completed_at,
+        }
+    
+    async def _fetch_kb_context(self, request_dict: Dict[str, Any]) -> KBContext:
+        """
+        Fetch context from Knowledge Base.
+        
+        Only the Supervisor has KB access - sub-agents receive read-only excerpts.
+        
+        Args:
+            request_dict: The review request as a dictionary
+            
+        Returns:
+            KBContext with relevant learnings and categorized insights
+        """
+        if not self.config.kb_enabled:
+            logger.debug("KB is disabled, returning empty context")
+            return KBContext()
         
         try:
-            return get_kb_client()
+            # Extract file paths
+            file_paths = [f.get("path", "") for f in request_dict.get("files", [])]
+            
+            # Extract code snippets from file contents (first 500 chars each)
+            code_snippets = []
+            for file_info in request_dict.get("files", []):
+                content = file_info.get("content")
+                if content:
+                    code_snippets.append(content[:500])
+            
+            # Build PR context string
+            pr_parts = []
+            if request_dict.get("pr_title"):
+                pr_parts.append(request_dict["pr_title"])
+            if request_dict.get("pr_description"):
+                pr_parts.append(request_dict["pr_description"][:300])
+            pr_context = " ".join(pr_parts) if pr_parts else None
+            
+            # Query the KB
+            kb_context = await self._kb_client.query_context(
+                file_paths=file_paths,
+                code_snippets=code_snippets,
+                pr_context=pr_context,
+                max_learnings=10,
+            )
+            
+            # Post-process: categorize learnings into the appropriate buckets
+            if kb_context.learnings:
+                kb_context = self._categorize_learnings(kb_context)
+            
+            logger.info(
+                f"Fetched KB context: {len(kb_context.learnings)} learnings, "
+                f"{len(kb_context.coding_style)} style rules, "
+                f"{len(kb_context.best_practices)} best practices"
+            )
+            
+            return kb_context
+            
         except Exception as e:
-            self._logger.warning(f"Failed to get KB client: {e}")
+            logger.warning(f"Failed to fetch KB context: {e}")
+            return KBContext()
+    
+    def _categorize_learnings(self, kb_context: KBContext) -> KBContext:
+        """
+        Categorize raw learnings into the appropriate KBContext fields.
+        
+        Uses simple keyword matching to categorize learnings.
+        """
+        style_keywords = ["style", "format", "naming", "convention", "indent", "spacing"]
+        test_keywords = ["test", "testing", "mock", "fixture", "assert", "coverage"]
+        practice_keywords = ["best practice", "should", "prefer", "avoid", "always", "never"]
+        
+        for learning in kb_context.learnings:
+            content = learning.get("content", "").lower()
+            
+            # Check for style-related
+            if any(kw in content for kw in style_keywords):
+                kb_context.coding_style.append(learning.get("content", ""))
+            
+            # Check for testing-related
+            elif any(kw in content for kw in test_keywords):
+                kb_context.testing_patterns.append(learning.get("content", ""))
+            
+            # Check for best practices
+            elif any(kw in content for kw in practice_keywords):
+                kb_context.best_practices.append(learning.get("content", ""))
+            
+            # Default to conventions
+            else:
+                kb_context.conventions.append(learning.get("content", ""))
+        
+        return kb_context
+    
+    async def run(
+        self,
+        request: ReviewRequest,
+        session_id: Optional[str] = None,
+    ) -> SupervisorOutput:
+        """
+        Run the supervisor workflow on a review request.
+        
+        Args:
+            request: The review request
+            session_id: Optional session ID for checkpointing
+            
+        Returns:
+            SupervisorOutput with aggregated results
+        """
+        workflow_start = time.perf_counter()
+        
+        if session_id is None:
+            session_id = str(uuid.uuid4())
+        
+        # Set session ID for log correlation
+        set_session_id(session_id)
+        
+        # Log workflow start with full context
+        log_with_data(logger, 20, "Starting supervisor workflow", {
+            "session_id": session_id,
+            "files_count": len(request.files),
+            "repo_url": request.repo_url,
+            "pr_number": request.pr_number,
+            "branch": request.branch,
+            "user_request": request.user_request[:100] if request.user_request else None,
+            "llm_provider": self.config.llm_provider.value,
+            "llm_model": self.config.llm_model,
+            "kb_enabled": self.config.kb_enabled,
+            "checkpointing_enabled": self.config.enable_checkpointing,
+        })
+        
+        # Prepare initial state
+        initial_state: SupervisorState = {
+            "request": request.to_dict(),
+            "session_id": session_id,
+            "started_at": datetime.utcnow().isoformat(),
+            "completed_steps": [],
+            "errors": [],
+            "current_step": "starting",
+        }
+        
+        # Configure for checkpointing
+        config = {"configurable": {"thread_id": session_id}}
+        
+        # Extract owner/repo/pr_number for checkpoint metadata
+        owner = None
+        repo = None
+        pr_number = request.pr_number
+        if request.repo_url:
+            # Parse owner/repo from URL like https://github.com/owner/repo
+            parts = request.repo_url.rstrip('/').split('/')
+            if len(parts) >= 2:
+                repo = parts[-1]
+                owner = parts[-2]
+        
+        # Create initial checkpoint in database
+        await self._save_checkpoint_to_db(
+            session_id, 
+            initial_state, 
+            owner=owner, 
+            repo=repo, 
+            pr_number=pr_number
+        )
+        
+        try:
+            log_with_data(logger, 20, "Invoking LangGraph workflow", {
+                "session_id": session_id,
+                "entry_point": "parse_intent",
+            })
+            
+            # Run the workflow
+            final_state = await self.compiled_graph.ainvoke(
+                initial_state,
+                config=config,
+            )
+            
+            workflow_duration = (time.perf_counter() - workflow_start) * 1000
+            
+            # Extract final output
+            if final_state.get("final_output"):
+                output = self._reconstruct_output(final_state["final_output"])
+                output.duration_seconds = workflow_duration / 1000
+                
+                # Log successful completion
+                log_with_data(logger, 20, "Supervisor workflow completed successfully", {
+                    "session_id": session_id,
+                    "status": output.status.value,
+                    "total_duration_ms": round(workflow_duration, 2),
+                    "steps_completed": final_state.get("completed_steps", []),
+                    "review_issues": output.review_output.total_issues if output.review_output else 0,
+                    "tests_generated": len(output.test_output.tests) if output.test_output else 0,
+                })
+                
+                # Mark checkpoint as completed in database
+                await self._mark_checkpoint_completed(session_id, final_state)
+                
+                return output
+            else:
+                # Something went wrong
+                log_with_data(logger, 40, "Workflow completed without producing output", {
+                    "session_id": session_id,
+                    "final_state_keys": list(final_state.keys()) if final_state else [],
+                    "completed_steps": final_state.get("completed_steps", []) if final_state else [],
+                    "errors": final_state.get("errors", []) if final_state else [],
+                })
+                
+                return SupervisorOutput(
+                    status=AgentStatus.FAILED,
+                    error="Workflow completed without producing output",
+                    session_id=session_id,
+                )
+                
+        except Exception as e:
+            workflow_duration = (time.perf_counter() - workflow_start) * 1000
+            
+            log_with_data(logger, 40, f"Supervisor workflow failed: {e}", {
+                "session_id": session_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "duration_ms": round(workflow_duration, 2),
+            })
+            
+            # Mark checkpoint as failed in database
+            await self._mark_checkpoint_failed(session_id, str(e))
+            
+            return SupervisorOutput(
+                status=AgentStatus.FAILED,
+                error=str(e),
+                session_id=session_id,
+            )
+    
+    async def resume(
+        self,
+        session_id: str,
+    ) -> SupervisorOutput:
+        """
+        Resume a workflow from checkpoint.
+        
+        Args:
+            session_id: The session ID to resume
+            
+        Returns:
+            SupervisorOutput with aggregated results
+        """
+        set_session_id(session_id)
+        
+        if not self.config.enable_checkpointing:
+            log_with_data(logger, 40, "Cannot resume: checkpointing is disabled", {
+                "session_id": session_id,
+            })
+            raise ValueError("Checkpointing is not enabled")
+        
+        log_with_data(logger, 20, "Attempting to resume workflow from checkpoint", {
+            "session_id": session_id,
+        })
+        
+        config = {"configurable": {"thread_id": session_id}}
+        
+        try:
+            # Try to load from database first
+            db_state = await self._load_checkpoint_from_db(session_id)
+            
+            # Get the current state from checkpoint
+            state = await self.compiled_graph.aget_state(config)
+            
+            if state is None and db_state is None:
+                log_with_data(logger, 40, "No checkpoint found for session", {
+                    "session_id": session_id,
+                })
+                raise ValueError(f"No checkpoint found for session: {session_id}")
+            
+            # Log checkpoint state
+            current_step = state.values.get("current_step") if state else "unknown"
+            completed_steps = state.values.get("completed_steps", []) if state else []
+            
+            log_checkpoint_restored(logger, session_id, current_step)
+            log_with_data(logger, 20, "Checkpoint state loaded", {
+                "session_id": session_id,
+                "current_step": current_step,
+                "completed_steps": completed_steps,
+            })
+            
+            # Continue from where we left off
+            resume_start = time.perf_counter()
+            final_state = await self.compiled_graph.ainvoke(
+                None,  # Continue from checkpoint
+                config=config,
+            )
+            
+            resume_duration = (time.perf_counter() - resume_start) * 1000
+            
+            if final_state.get("final_output"):
+                output = self._reconstruct_output(final_state["final_output"])
+                
+                log_with_data(logger, 20, "Resumed workflow completed successfully", {
+                    "session_id": session_id,
+                    "status": output.status.value,
+                    "resume_duration_ms": round(resume_duration, 2),
+                })
+                
+                return output
+            else:
+                log_with_data(logger, 40, "Resumed workflow completed without output", {
+                    "session_id": session_id,
+                })
+                
+                return SupervisorOutput(
+                    status=AgentStatus.FAILED,
+                    error="Resumed workflow completed without producing output",
+                    session_id=session_id,
+                )
+                
+        except Exception as e:
+            log_with_data(logger, 40, f"Resume failed: {e}", {
+                "session_id": session_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            })
+            
+            return SupervisorOutput(
+                status=AgentStatus.FAILED,
+                error=str(e),
+                session_id=session_id,
+            )
+    
+    async def _save_checkpoint_to_db(
+        self,
+        session_id: str,
+        state: Dict[str, Any],
+        owner: Optional[str] = None,
+        repo: Optional[str] = None,
+        pr_number: Optional[int] = None,
+    ) -> None:
+        """Save checkpoint state to database for persistence across restarts."""
+        if not self.config.enable_checkpointing:
+            return
+        
+        try:
+            # Import here to avoid circular imports
+            from db.database import SessionLocal
+            from db import crud, schemas
+            
+            db = SessionLocal()
+            try:
+                checkpoint_data = schemas.CheckpointCreate(
+                    thread_id=session_id,
+                    owner=owner,
+                    repo=repo,
+                    pr_number=pr_number,
+                    current_node=state.get("current_step", "unknown"),
+                    completed_nodes=state.get("completed_steps", []),
+                    state_data=state,
+                    status="in_progress",
+                )
+                
+                crud.upsert_checkpoint(db, checkpoint_data)
+                
+                log_with_data(logger, 10, "Checkpoint saved to database", {
+                    "session_id": session_id,
+                    "current_node": checkpoint_data.current_node,
+                    "completed_nodes": checkpoint_data.completed_nodes,
+                })
+                
+            finally:
+                db.close()
+            
+        except Exception as e:
+            log_with_data(logger, 30, f"Failed to save checkpoint to database: {e}", {
+                "session_id": session_id,
+                "error": str(e),
+            })
+    
+    async def _load_checkpoint_from_db(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load checkpoint state from database."""
+        if not self.config.enable_checkpointing:
+            return None
+        
+        try:
+            # Import here to avoid circular imports
+            from db.database import SessionLocal
+            from db import crud
+            
+            db = SessionLocal()
+            try:
+                checkpoint = crud.get_checkpoint_by_thread_id(db, session_id)
+                
+                if not checkpoint:
+                    return None
+                
+                parsed = crud.parse_checkpoint_state(checkpoint)
+                
+                log_with_data(logger, 20, "Checkpoint loaded from database", {
+                    "session_id": session_id,
+                    "current_node": parsed.get("current_node"),
+                    "status": parsed.get("status"),
+                })
+                
+                return parsed.get("state_data")
+                
+            finally:
+                db.close()
+            
+        except Exception as e:
+            log_with_data(logger, 30, f"Failed to load checkpoint from database: {e}", {
+                "session_id": session_id,
+                "error": str(e),
+            })
             return None
     
-    def _validate_input(self, input_data: ReviewRequest) -> None:
-        """Validate review request."""
-        if not input_data.owner:
-            raise ValueError("Repository owner is required")
+    async def _mark_checkpoint_completed(self, session_id: str, final_state: Dict[str, Any]) -> None:
+        """Mark checkpoint as completed in the database."""
+        if not self.config.enable_checkpointing:
+            return
         
-        if not input_data.repo:
-            raise ValueError("Repository name is required")
-        
-        if not input_data.changed_files:
-            raise ValueError("No changed files provided")
-        
-        if not input_data.repo_path:
-            raise ValueError("Repository path is required")
-        
-        if not os.path.isdir(input_data.repo_path):
-            raise ValueError(f"Repository path does not exist: {input_data.repo_path}")
+        try:
+            from db.database import SessionLocal
+            from db import crud
+            
+            db = SessionLocal()
+            try:
+                crud.mark_checkpoint_completed(db, session_id, final_state)
+                
+                log_with_data(logger, 10, "Checkpoint marked as completed", {
+                    "session_id": session_id,
+                })
+            finally:
+                db.close()
+                
+        except Exception as e:
+            log_with_data(logger, 30, f"Failed to mark checkpoint as completed: {e}", {
+                "session_id": session_id,
+                "error": str(e),
+            })
     
-    def _execute(self, input_data: ReviewRequest) -> SupervisorOutput:
-        """Execute the full code review pipeline."""
-        start_time = time.time()
-        checkpoints: List[AgentCheckpoint] = []
-        errors: List[str] = []
+    async def _mark_checkpoint_failed(self, session_id: str, error_message: str, current_state: Optional[Dict[str, Any]] = None) -> None:
+        """Mark checkpoint as failed in the database."""
+        if not self.config.enable_checkpointing:
+            return
         
-        self._logger.info(
-            f"Starting review for {input_data.owner}/{input_data.repo} "
-            f"PR #{input_data.pr_number} ({len(input_data.changed_files)} files)"
-        )
-        
-        # Filter files by size and count limits
-        files_to_analyze = self._filter_files(input_data)
-        
-        if not files_to_analyze:
-            return SupervisorOutput(
-                status=AgentStatus.SUCCESS,
-                summary="No files to analyze after filtering.",
-                files_analyzed=0,
-                duration_seconds=time.time() - start_time,
-            )
-        
-        # ========== PHASE 1: Parser Agent ==========
-        parser_output, parser_checkpoint, parser_error = self._run_parser(
-            input_data, files_to_analyze
-        )
-        
-        if parser_checkpoint:
-            checkpoints.append(parser_checkpoint)
-        
-        if parser_error:
-            errors.append(f"Parser: {parser_error}")
-        
-        # Convert parser issues to ReviewIssues
-        parser_issues = self._convert_parser_to_review_issues(parser_output)
-        
-        # ========== PHASE 2: Review Agent ==========
-        review_output, review_checkpoint, review_error = self._run_review(
-            input_data, files_to_analyze, parser_output
-        )
-        
-        if review_checkpoint:
-            checkpoints.append(review_checkpoint)
-        
-        if review_error:
-            errors.append(f"Review: {review_error}")
-        
-        review_issues = review_output.issues if review_output else []
-        
-        # ========== PHASE 3: Reducer ==========
-        reduced_issues = self._run_reducer(parser_issues, review_issues)
-        
-        # ========== PHASE 4: KB Filter ==========
-        filter_result, kb_learnings_applied = self._run_kb_filter(
-            reduced_issues, input_data.owner, input_data.repo
-        )
-        
-        final_issues = filter_result.kept
-        suggestions_filtered = len(filter_result.removed)
-        
-        # ========== PHASE 5: Generate Summary ==========
-        summary = self._generate_summary(
-            final_issues,
-            len(files_to_analyze),
-            parser_output,
-            review_output,
-            suggestions_filtered,
-        )
-        
-        # Build output
-        duration = time.time() - start_time
-        
+        try:
+            from db.database import SessionLocal
+            from db import crud
+            
+            db = SessionLocal()
+            try:
+                crud.mark_checkpoint_failed(db, session_id, error_message, current_state)
+                
+                log_with_data(logger, 10, "Checkpoint marked as failed", {
+                    "session_id": session_id,
+                    "error": error_message,
+                })
+            finally:
+                db.close()
+                
+        except Exception as e:
+            log_with_data(logger, 30, f"Failed to mark checkpoint as failed: {e}", {
+                "session_id": session_id,
+                "error": str(e),
+            })
+    
+    def _reconstruct_output(self, output_dict: Dict[str, Any]) -> SupervisorOutput:
+        """Reconstruct SupervisorOutput from dictionary."""
         output = SupervisorOutput(
-            status=AgentStatus.SUCCESS if not errors else AgentStatus.SUCCESS,  # Partial success is still success
-            issues=final_issues,
-            summary=summary,
-            files_analyzed=len(files_to_analyze),
-            kb_learnings_applied=kb_learnings_applied,
-            suggestions_filtered=suggestions_filtered,
-            duration_seconds=duration,
-            parser_summary=self._build_parser_summary(parser_output),
-            review_summary=self._build_review_summary(review_output),
-            checkpoints=checkpoints,
-            errors=errors,
+            status=AgentStatus(output_dict.get("status", "completed")),
+            error=output_dict.get("error"),
+            errors=output_dict.get("errors", []),
+            session_id=output_dict.get("session_id"),
+            checkpoint_id=output_dict.get("checkpoint_id"),
+            started_at=output_dict.get("started_at"),
+            completed_at=output_dict.get("completed_at"),
+            duration_seconds=output_dict.get("duration_seconds"),
         )
         
-        self._logger.info(
-            f"Review completed in {duration:.2f}s: "
-            f"{len(final_issues)} issues, {suggestions_filtered} filtered"
-        )
+        # Reconstruct nested objects
+        if output_dict.get("parser_output"):
+            output.parser_output = ParserOutput.from_dict(output_dict["parser_output"])
+        
+        if output_dict.get("review_output"):
+            output.review_output = ReviewOutput.from_dict(output_dict["review_output"])
+        
+        if output_dict.get("test_output"):
+            output.test_output = TestOutput.from_dict(output_dict["test_output"])
+        
+        if output_dict.get("kb_context"):
+            output.kb_context = KBContext.from_dict(output_dict["kb_context"])
+        
+        if output_dict.get("intent"):
+            output.intent = UserIntent.from_dict(output_dict["intent"])
         
         return output
     
-    def _filter_files(self, input_data: ReviewRequest) -> List[Any]:
-        """Filter files by size and count limits."""
-        filtered = []
+    async def get_checkpoint_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the current checkpoint state for a session.
         
-        for fc in input_data.changed_files:
-            # Skip deleted files
-            if fc.is_deleted:
-                continue
-            
-            # Check file exists and size
-            full_path = os.path.join(input_data.repo_path, fc.path)
-            if not os.path.exists(full_path):
-                continue
-            
-            try:
-                size = os.path.getsize(full_path)
-                if size > self.config.max_file_size:
-                    self._logger.debug(f"Skipping large file: {fc.path} ({size} bytes)")
-                    continue
-            except OSError:
-                continue
-            
-            filtered.append(fc)
-            
-            # Check count limit
-            if len(filtered) >= self.config.max_files:
-                self._logger.warning(
-                    f"File limit reached ({self.config.max_files}), "
-                    f"skipping remaining files"
-                )
-                break
-        
-        return filtered
-    
-    def _run_parser(
-        self,
-        input_data: ReviewRequest,
-        files_to_analyze: List[Any],
-    ) -> Tuple[Optional[ParserOutput], Optional[AgentCheckpoint], Optional[str]]:
-        """Run the Parser Agent."""
-        self._logger.info("Running Parser Agent...")
-        
-        try:
-            parser = self._get_parser_agent()
-            
-            parser_input = ParserInput(
-                changed_files=files_to_analyze,
-                repo_path=input_data.repo_path,
-                enable_security_scan=True,
-                enable_dead_code_detection=True,
-                complexity_threshold=10,
-            )
-            
-            output, checkpoint = parser.run(parser_input)
-            
-            self._logger.info(
-                f"Parser completed: {output.total_files} files, "
-                f"{output.total_security_issues} security issues, "
-                f"{output.total_complexity_issues} complexity issues"
-            )
-            
-            return output, checkpoint, None
-            
-        except Exception as e:
-            self._logger.error(f"Parser Agent failed: {e}")
-            return None, None, str(e)
-    
-    def _run_review(
-        self,
-        input_data: ReviewRequest,
-        files_to_analyze: List[Any],
-        parser_output: Optional[ParserOutput],
-    ) -> Tuple[Optional[ReviewOutput], Optional[AgentCheckpoint], Optional[str]]:
-        """Run the Review Agent."""
-        self._logger.info("Running Review Agent...")
-        
-        try:
-            reviewer = self._get_review_agent()
-            
-            # Build parser outputs map for context
-            parser_outputs: Dict[str, FileAnalysis] = {}
-            if parser_output:
-                for fa in parser_output.files:
-                    parser_outputs[fa.file_path] = fa
-            
-            # Get KB context
-            kb_context = self._get_kb_context(input_data, files_to_analyze)
-            
-            review_input = ReviewInput(
-                owner=input_data.owner,
-                repo=input_data.repo,
-                changed_files=files_to_analyze,
-                repo_path=input_data.repo_path,
-                pr_context=input_data.pr_context,
-                kb_context=kb_context,
-                parser_outputs=parser_outputs,
-            )
-            
-            output, checkpoint = reviewer.run(review_input)
-            
-            self._logger.info(
-                f"Review completed: {len(output.issues)} issues, "
-                f"KB context: {output.kb_context_used}"
-            )
-            
-            return output, checkpoint, None
-            
-        except Exception as e:
-            self._logger.error(f"Review Agent failed: {e}")
-            return None, None, str(e)
-    
-    def _get_kb_context(
-        self,
-        input_data: ReviewRequest,
-        files_to_analyze: List[Any],
-    ) -> Optional[KBContext]:
-        """Get KB context for review enrichment."""
-        if not self.config.kb_enabled:
+        Useful for debugging or displaying progress.
+        """
+        if not self.config.enable_checkpointing:
             return None
         
-        client = self._get_kb_client()
-        if not client or not client.enabled:
-            return None
+        config = {"configurable": {"thread_id": session_id}}
+        state = await self.compiled_graph.aget_state(config)
         
-        try:
-            learnings = client.get_pr_context_learnings(
-                owner=input_data.owner,
-                repo=input_data.repo,
-                pr_description=input_data.pr_description or input_data.pr_title,
-                changed_files=[f.path for f in files_to_analyze],
-                k=10,
-            )
-            
-            if not learnings:
-                return KBContext(enabled=True)
-            
-            formatted = client.format_learnings_for_prompt(learnings)
-            
-            return KBContext(
-                learnings=learnings,
-                formatted=formatted,
-                enabled=True,
-            )
-            
-        except Exception as e:
-            self._logger.warning(f"Failed to get KB context: {e}")
-            return KBContext(enabled=True)
-    
-    def _convert_parser_to_review_issues(
-        self,
-        parser_output: Optional[ParserOutput],
-    ) -> List[ReviewIssue]:
-        """Convert parser output to ReviewIssue format."""
-        if not parser_output:
-            return []
-        
-        issues = []
-        
-        for fa in parser_output.files:
-            # Convert security issues
-            for si in fa.security_issues:
-                issues.append(ReviewIssue(
-                    file_path=fa.file_path,
-                    line_start=si.line,
-                    severity=si.severity,
-                    category=IssueCategory.SECURITY,
-                    title=f"Security: {si.type.value}",
-                    message=si.description,
-                    suggestion=si.recommendation,
-                    code_snippet=si.code_snippet,
-                    confidence=0.9,
-                    source="parser",
-                ))
-            
-            # Convert complexity issues
-            for ci in fa.complexity_issues:
-                issues.append(ReviewIssue(
-                    file_path=fa.file_path,
-                    line_start=ci.line,
-                    severity=Severity.MEDIUM,
-                    category=IssueCategory.COMPLEXITY,
-                    title=f"High Complexity: {ci.function_name}",
-                    message=f"Function has cyclomatic complexity of {ci.complexity} (threshold: {ci.threshold})",
-                    suggestion="Consider breaking this function into smaller, more focused functions.",
-                    confidence=0.95,
-                    source="parser",
-                ))
-            
-            # Convert dead code
-            for dc in fa.dead_code:
-                issues.append(ReviewIssue(
-                    file_path=fa.file_path,
-                    line_start=dc.line,
-                    severity=Severity.LOW,
-                    category=IssueCategory.DEAD_CODE,
-                    title=f"Unused {dc.type.value}: {dc.name}",
-                    message=f"The {dc.type.value} '{dc.name}' appears to be unused.",
-                    suggestion="Consider removing this unused code or adding a comment explaining why it's kept.",
-                    confidence=0.7,
-                    source="parser",
-                ))
-        
-        return issues
-    
-    def _run_reducer(
-        self,
-        parser_issues: List[ReviewIssue],
-        review_issues: List[ReviewIssue],
-    ) -> List[ReviewIssue]:
-        """Run the Reducer to merge and deduplicate issues."""
-        self._logger.info(
-            f"Reducing issues: {len(parser_issues)} parser + {len(review_issues)} review"
-        )
-        
-        reducer = self._get_reducer()
-        reduced = reducer.reduce(parser_issues, review_issues)
-        
-        self._logger.info(f"Reduced to {len(reduced)} issues")
-        return reduced
-    
-    def _run_kb_filter(
-        self,
-        issues: List[ReviewIssue],
-        owner: str,
-        repo: str,
-    ) -> Tuple[FilterResult, int]:
-        """Run KB filter on issues."""
-        if not self.config.kb_enabled:
-            return FilterResult(kept=issues, removed=[], modifications=0), 0
-        
-        self._logger.info(f"Filtering {len(issues)} issues with KB...")
-        
-        kb_filter = self._get_kb_filter()
-        result = kb_filter.filter(issues, owner, repo)
-        
-        self._logger.info(
-            f"KB filter: {len(result.kept)} kept, {len(result.removed)} removed, "
-            f"{result.modifications} modified"
-        )
-        
-        # Count learnings applied (removed + modified)
-        kb_learnings_applied = len(result.removed) + result.modifications
-        
-        return result, kb_learnings_applied
-    
-    def _generate_summary(
-        self,
-        issues: List[ReviewIssue],
-        files_analyzed: int,
-        parser_output: Optional[ParserOutput],
-        review_output: Optional[ReviewOutput],
-        suggestions_filtered: int,
-    ) -> str:
-        """Generate a summary of the review."""
-        if not issues:
-            return f"✅ No issues found in {files_analyzed} files analyzed."
-        
-        # Count by severity
-        severity_counts = {}
-        for issue in issues:
-            sev = issue.severity.value
-            severity_counts[sev] = severity_counts.get(sev, 0) + 1
-        
-        # Count by category
-        category_counts = {}
-        for issue in issues:
-            cat = issue.category.value
-            category_counts[cat] = category_counts.get(cat, 0) + 1
-        
-        # Build summary
-        lines = [f"📋 **Code Review Summary**"]
-        lines.append(f"- Files analyzed: {files_analyzed}")
-        lines.append(f"- Issues found: {len(issues)}")
-        
-        if suggestions_filtered > 0:
-            lines.append(f"- Suggestions filtered (based on past learnings): {suggestions_filtered}")
-        
-        # Severity breakdown
-        if severity_counts:
-            lines.append("\n**By Severity:**")
-            for sev in ["critical", "high", "medium", "low", "info"]:
-                count = severity_counts.get(sev, 0)
-                if count > 0:
-                    emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢", "info": "ℹ️"}.get(sev, "⚪")
-                    lines.append(f"  {emoji} {sev.capitalize()}: {count}")
-        
-        # Category breakdown
-        if category_counts:
-            lines.append("\n**By Category:**")
-            for cat, count in sorted(category_counts.items(), key=lambda x: -x[1]):
-                lines.append(f"  - {cat}: {count}")
-        
-        return "\n".join(lines)
-    
-    def _build_parser_summary(
-        self,
-        parser_output: Optional[ParserOutput],
-    ) -> Optional[Dict[str, Any]]:
-        """Build parser summary for output."""
-        if not parser_output:
-            return None
-        
-        return {
-            "total_files": parser_output.total_files,
-            "failed_files": len(parser_output.failed_files),
-            "total_functions": parser_output.total_functions,
-            "total_classes": parser_output.total_classes,
-            "security_issues": parser_output.total_security_issues,
-            "dead_code": parser_output.total_dead_code,
-            "complexity_issues": parser_output.total_complexity_issues,
-            "avg_complexity": parser_output.avg_complexity,
-        }
-    
-    def _build_review_summary(
-        self,
-        review_output: Optional[ReviewOutput],
-    ) -> Optional[Dict[str, Any]]:
-        """Build review summary for output."""
-        if not review_output:
-            return None
-        
-        return {
-            "files_reviewed": review_output.files_reviewed,
-            "issues_found": len(review_output.issues),
-            "kb_context_used": review_output.kb_context_used,
-            "kb_learnings_count": review_output.kb_learnings_count,
-            "total_tokens_used": review_output.total_tokens_used,
-        }
+        return state.values if state else None
 
 
-def run_code_review(
-    request: ReviewRequest,
-    config: Optional[SupervisorConfig] = None,
-    kb_client: Optional[KnowledgeBaseClient] = None,
-) -> SupervisorOutput:
+class MockSupervisorAgent(SupervisorAgent):
     """
-    Convenience function to run a full code review.
+    Mock Supervisor Agent for testing.
     
-    Args:
-        request: Review request with PR details and changed files
-        config: Optional supervisor configuration
-        kb_client: Optional KB client
-        
-    Returns:
-        SupervisorOutput with review results
+    Uses mock sub-agents and doesn't make LLM calls.
     """
-    supervisor = SupervisorAgent(config=config, kb_client=kb_client)
-    output, _ = supervisor.run(request)
-    return output
+    
+    def __init__(self, config: Optional[SupervisorConfig] = None):
+        if config is None:
+            config = SupervisorConfig(use_mock_agents=True)
+        else:
+            config.use_mock_agents = True
+        super().__init__(config)

@@ -1,618 +1,478 @@
 """
 Parser Agent
 
-Performs static analysis on changed files:
-- AST parsing
-- Semantic graph construction
-- Security vulnerability detection
-- Dead code detection
-- Complexity analysis
+Sub-agent responsible for code understanding and structure extraction.
+Uses the Parsers/ module for AST and Semantic analysis.
 
-This agent runs first in the pipeline to gather structural information
-about the code before LLM-based review.
+Responsibilities:
+- Parse source files using tree-sitter AST
+- Build semantic graphs (imports, calls, inheritance)
+- Extract symbols (functions, classes, methods)
+- Identify hotspots (high complexity areas)
+
+Constraints:
+- Does NOT do code review
+- Does NOT suggest changes
+- Only parses and summarizes
 """
 
-import re
+import asyncio
 import os
-import logging
+import sys
+import time
 from pathlib import Path
-from typing import List, Dict, Set, Optional, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
-from agent.subagents.base_agent import BaseAgent
-from agent.schemas.common import Severity, FileChange
-from agent.schemas.parser_output import (
-    ParserInput,
+from .base_agent import BaseAgent, AgentConfig
+from ..schemas.common import FileInfo
+from ..schemas.parser_output import (
     ParserOutput,
-    FileAnalysis,
-    FunctionInfo,
-    ClassInfo,
-    VariableInfo,
-    ImportInfo,
-    SecurityIssue,
-    SecurityIssueType,
-    SecurityPattern,
-    DeadCodeInfo,
-    DeadCodeType,
-    ComplexityIssue,
+    FileMetadata,
+    Symbol,
+    SymbolType,
+    CallGraphEntry,
+    Hotspot,
 )
-from agent.parsers import (
-    AnalysisPipeline,
-    EXTENSION_MAP,
-    is_supported_language,
+from ..logging_config import (
+    get_logger,
+    get_session_id,
+    log_with_data,
 )
 
+logger = get_logger(__name__)
 
-# Security patterns for common vulnerabilities
-SECURITY_PATTERNS: List[SecurityPattern] = [
-    # SQL Injection
-    SecurityPattern(
-        type=SecurityIssueType.SQL_INJECTION,
-        severity=Severity.CRITICAL,
-        pattern=r'(?:execute|cursor\.execute|query)\s*\(\s*["\'].*?%s|(?:f["\'].*?\{.*?["\'])|(?:["\'].*?\+.*?["\'])',
-        description="Potential SQL injection vulnerability. User input may be directly concatenated into SQL query.",
-        recommendation="Use parameterized queries or an ORM to prevent SQL injection.",
-        languages=["python"],
-        cwe_id="CWE-89"
-    ),
-    SecurityPattern(
-        type=SecurityIssueType.SQL_INJECTION,
-        severity=Severity.CRITICAL,
-        pattern=r'(?:query|execute)\s*\(\s*`[^`]*\$\{',
-        description="Potential SQL injection. Template literals with interpolation in SQL queries.",
-        recommendation="Use parameterized queries instead of template literals for SQL.",
-        languages=["javascript", "typescript"],
-        cwe_id="CWE-89"
-    ),
-    
-    # XSS
-    SecurityPattern(
-        type=SecurityIssueType.XSS,
-        severity=Severity.HIGH,
-        pattern=r'innerHTML\s*=|document\.write\s*\(|\.html\s*\(',
-        description="Potential XSS vulnerability. Direct DOM manipulation with untrusted content.",
-        recommendation="Use textContent instead of innerHTML, or sanitize HTML content before insertion.",
-        languages=["javascript", "typescript", "tsx"],
-        cwe_id="CWE-79"
-    ),
-    SecurityPattern(
-        type=SecurityIssueType.XSS,
-        severity=Severity.HIGH,
-        pattern=r'dangerouslySetInnerHTML',
-        description="React dangerouslySetInnerHTML can lead to XSS if content is not sanitized.",
-        recommendation="Ensure content passed to dangerouslySetInnerHTML is properly sanitized.",
-        languages=["javascript", "typescript", "tsx"],
-        cwe_id="CWE-79"
-    ),
-    
-    # Command Injection
-    SecurityPattern(
-        type=SecurityIssueType.COMMAND_INJECTION,
-        severity=Severity.CRITICAL,
-        pattern=r'(?:os\.system|subprocess\.call|subprocess\.run|subprocess\.Popen)\s*\([^)]*(?:f["\']|\+|%)',
-        description="Potential command injection. User input may be passed to system commands.",
-        recommendation="Use subprocess with shell=False and pass arguments as a list.",
-        languages=["python"],
-        cwe_id="CWE-78"
-    ),
-    SecurityPattern(
-        type=SecurityIssueType.COMMAND_INJECTION,
-        severity=Severity.CRITICAL,
-        pattern=r'(?:exec|spawn|execSync)\s*\([^)]*(?:`|\+|\$\{)',
-        description="Potential command injection vulnerability in shell command execution.",
-        recommendation="Avoid shell command execution with user input. Use libraries instead.",
-        languages=["javascript", "typescript"],
-        cwe_id="CWE-78"
-    ),
-    
-    # Hardcoded Secrets
-    SecurityPattern(
-        type=SecurityIssueType.HARDCODED_SECRET,
-        severity=Severity.HIGH,
-        pattern=r'(?:password|secret|api_key|apikey|api-key|token|auth)\s*=\s*["\'][^"\']{8,}["\']',
-        description="Potential hardcoded secret or credential detected.",
-        recommendation="Use environment variables or a secrets manager for sensitive values.",
-        languages=["python", "javascript", "typescript"],
-        cwe_id="CWE-798"
-    ),
-    SecurityPattern(
-        type=SecurityIssueType.HARDCODED_SECRET,
-        severity=Severity.HIGH,
-        pattern=r'(?:AKIA|sk-|ghp_|gho_|github_pat_)[A-Za-z0-9]{10,}',
-        description="Potential AWS key, OpenAI key, or GitHub token detected.",
-        recommendation="Remove hardcoded credentials and use environment variables.",
-        languages=["python", "javascript", "typescript"],
-        cwe_id="CWE-798"
-    ),
-    
-    # Path Traversal
-    SecurityPattern(
-        type=SecurityIssueType.PATH_TRAVERSAL,
-        severity=Severity.HIGH,
-        pattern=r'(?:open|read_file|write_file|Path)\s*\([^)]*(?:\+|f["\']|%)',
-        description="Potential path traversal vulnerability. User input may be used in file paths.",
-        recommendation="Validate and sanitize file paths. Use os.path.basename or Path.resolve().",
-        languages=["python"],
-        cwe_id="CWE-22"
-    ),
-    SecurityPattern(
-        type=SecurityIssueType.PATH_TRAVERSAL,
-        severity=Severity.HIGH,
-        pattern=r'(?:readFile|writeFile|createReadStream)\s*\([^)]*(?:\+|`|\$\{)',
-        description="Potential path traversal in file system operations.",
-        recommendation="Validate file paths and use path.resolve() to prevent traversal.",
-        languages=["javascript", "typescript"],
-        cwe_id="CWE-22"
-    ),
-    
-    # Insecure Random
-    SecurityPattern(
-        type=SecurityIssueType.INSECURE_RANDOM,
-        severity=Severity.MEDIUM,
-        pattern=r'(?:random\.random|random\.randint|Math\.random)\s*\(',
-        description="Using non-cryptographic random number generator for potentially sensitive operation.",
-        recommendation="Use secrets module (Python) or crypto.randomBytes (Node.js) for security-sensitive operations.",
-        languages=["python", "javascript", "typescript"],
-        cwe_id="CWE-330"
-    ),
-    
-    # Debug Mode
-    SecurityPattern(
-        type=SecurityIssueType.DEBUG_ENABLED,
-        severity=Severity.MEDIUM,
-        pattern=r'(?:DEBUG\s*=\s*True|debug\s*:\s*true|\.debug\s*=\s*true)',
-        description="Debug mode appears to be enabled. This may expose sensitive information.",
-        recommendation="Ensure debug mode is disabled in production environments.",
-        languages=["python", "javascript", "typescript"],
-        cwe_id="CWE-215"
-    ),
-    
-    # Eval Usage
-    SecurityPattern(
-        type=SecurityIssueType.COMMAND_INJECTION,
-        severity=Severity.CRITICAL,
-        pattern=r'\beval\s*\(',
-        description="Use of eval() can lead to code injection vulnerabilities.",
-        recommendation="Avoid eval(). Use safer alternatives like JSON.parse() or ast.literal_eval().",
-        languages=["python", "javascript", "typescript"],
-        cwe_id="CWE-95"
-    ),
-]
+# Add Parsers directory to path for imports
+PARSERS_DIR = Path(__file__).parent.parent.parent.parent / "Parsers"
+if str(PARSERS_DIR) not in sys.path:
+    sys.path.insert(0, str(PARSERS_DIR))
 
 
-class ParserAgent(BaseAgent[ParserInput, ParserOutput]):
+# Complexity thresholds for hotspot detection
+COMPLEXITY_WARNING_THRESHOLD = 10
+COMPLEXITY_CRITICAL_THRESHOLD = 15
+LARGE_FUNCTION_LINES = 50
+MANY_PARAMS_THRESHOLD = 5
+
+
+class ParserAgent(BaseAgent[ParserOutput]):
     """
-    Parser Agent for static code analysis.
+    Parser Agent for code understanding and structure extraction.
     
-    Analyzes changed files to extract:
-    - Structural information (functions, classes, imports)
-    - Security vulnerabilities
-    - Dead/unused code
-    - Complexity metrics
+    This agent uses the existing Parsers/ infrastructure to:
+    1. Parse source code into AST using tree-sitter
+    2. Build semantic graphs with relationships
+    3. Generate AST and Semantic reports
+    4. Extract symbols and identify hotspots
+    
+    NO LLM calls are made - this is pure static analysis.
     """
     
-    def __init__(
-        self,
-        enable_checkpointing: bool = True,
-        max_workers: int = 4,
-        security_patterns: Optional[List[SecurityPattern]] = None
-    ):
-        """
-        Initialize parser agent.
-        
-        Args:
-            enable_checkpointing: Enable state checkpointing
-            max_workers: Max parallel workers for file analysis
-            security_patterns: Custom security patterns (uses defaults if None)
-        """
-        super().__init__(enable_checkpointing=enable_checkpointing)
-        self.max_workers = max_workers
-        self.security_patterns = security_patterns or SECURITY_PATTERNS
-        self._logger = logging.getLogger("agent.parser")
+    def __init__(self, config: Optional[AgentConfig] = None):
+        """Initialize the Parser Agent."""
+        if config is None:
+            config = AgentConfig(
+                name="parser_agent",
+                timeout_seconds=120.0,  # 2 minutes for parsing
+                max_retries=2,
+            )
+        super().__init__(config)
+        self._pipeline = None
+        self._executor = ThreadPoolExecutor(max_workers=4)
     
     @property
     def name(self) -> str:
-        return "parser"
+        return "parser_agent"
     
-    def _validate_input(self, input_data: ParserInput) -> None:
-        """Validate parser input."""
-        if not input_data.changed_files:
-            raise ValueError("No changed files provided")
-        
-        if not input_data.repo_path:
-            raise ValueError("Repository path is required")
-        
-        if not os.path.isdir(input_data.repo_path):
-            raise ValueError(f"Repository path does not exist: {input_data.repo_path}")
+    def _get_pipeline(self):
+        """Lazy load the analysis pipeline from Parsers/."""
+        if self._pipeline is None:
+            try:
+                from pipeline import AnalysisPipeline
+                self._pipeline = AnalysisPipeline()
+            except ImportError as e:
+                logger.error(f"Failed to import AnalysisPipeline: {e}")
+                raise ImportError(
+                    "AnalysisPipeline not found. Ensure Parsers/ directory is in the path."
+                ) from e
+        return self._pipeline
     
-    def _execute(self, input_data: ParserInput) -> ParserOutput:
-        """Execute parsing on all changed files."""
+    async def _execute(self, files: List[FileInfo]) -> ParserOutput:
+        """
+        Execute parsing on the provided files.
+        
+        Args:
+            files: List of FileInfo objects to parse.
+            
+        Returns:
+            ParserOutput with parsed metadata.
+        """
         output = ParserOutput()
+        session_id = get_session_id() or "unknown"
+        start_time = time.perf_counter()
         
-        # Filter to supported files
-        supported_files = [
-            f for f in input_data.changed_files
-            if self._is_supported_file(f.path) and not f.is_deleted
-        ]
+        log_with_data(logger, 20, "Starting code parsing", {
+            "session_id": session_id,
+            "total_files": len(files),
+            "languages": list(set(self._detect_language(f.path) for f in files)),
+        })
         
-        self._logger.info(f"Analyzing {len(supported_files)} supported files")
+        # Process files concurrently
+        tasks = [self._parse_file(file_info) for file_info in files]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Analyze files (parallel or sequential)
-        if self.max_workers > 1 and len(supported_files) > 1:
-            analyses = self._analyze_files_parallel(
-                supported_files,
-                input_data.repo_path,
-                input_data.complexity_threshold,
-                input_data.enable_security_scan,
-                input_data.enable_dead_code_detection
-            )
-        else:
-            analyses = [
-                self._analyze_file(
-                    f,
-                    input_data.repo_path,
-                    input_data.complexity_threshold,
-                    input_data.enable_security_scan,
-                    input_data.enable_dead_code_detection
-                )
-                for f in supported_files
-            ]
+        files_parsed = 0
+        files_failed = 0
         
-        # Collect results
-        for analysis in analyses:
-            if analysis.parse_error:
-                output.failed_files.append(analysis.file_path)
+        for file_info, result in zip(files, results):
+            if isinstance(result, Exception):
+                files_failed += 1
+                output.errors.append({
+                    "file": file_info.path,
+                    "error": str(result),
+                })
+                log_with_data(logger, 30, f"Failed to parse file: {file_info.path}", {
+                    "session_id": session_id,
+                    "file": file_info.path,
+                    "error": str(result),
+                    "error_type": type(result).__name__,
+                })
             else:
-                output.files.append(analysis)
+                files_parsed += 1
+                file_meta, symbols, call_entries, hotspots, ast_report, semantic_report = result
+                
+                if file_meta:
+                    output.files.append(file_meta)
+                output.symbols.extend(symbols)
+                output.call_graph.extend(call_entries)
+                output.hotspots.extend(hotspots)
+                
+                if ast_report:
+                    output.ast_reports[file_info.path] = ast_report
+                if semantic_report:
+                    output.semantic_reports[file_info.path] = semantic_report
         
-        # Aggregate statistics
-        self._aggregate_stats(output)
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        
+        log_with_data(logger, 20, "Code parsing completed", {
+            "session_id": session_id,
+            "files_parsed": files_parsed,
+            "files_failed": files_failed,
+            "symbols_extracted": len(output.symbols),
+            "hotspots_found": len(output.hotspots),
+            "duration_ms": round(duration_ms, 2),
+        })
         
         return output
     
-    def _is_supported_file(self, file_path: str) -> bool:
-        """Check if file type is supported for analysis."""
-        ext = Path(file_path).suffix.lower()
-        return ext in EXTENSION_MAP
-    
-    def _analyze_files_parallel(
-        self,
-        files: List[FileChange],
-        repo_path: str,
-        complexity_threshold: int,
-        enable_security: bool,
-        enable_dead_code: bool
-    ) -> List[FileAnalysis]:
-        """Analyze files in parallel."""
-        analyses = []
+    async def _parse_file(self, file_info: FileInfo) -> tuple:
+        """
+        Parse a single file asynchronously.
         
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(
-                    self._analyze_file,
-                    f,
-                    repo_path,
-                    complexity_threshold,
-                    enable_security,
-                    enable_dead_code
-                ): f.path
-                for f in files
-            }
-            
-            for future in as_completed(futures):
-                file_path = futures[future]
-                try:
-                    analysis = future.result()
-                    analyses.append(analysis)
-                except Exception as e:
-                    self._logger.error(f"Error analyzing {file_path}: {e}")
-                    analyses.append(FileAnalysis(
-                        file_path=file_path,
-                        language="unknown",
-                        total_lines=0,
-                        code_lines=0,
-                        parse_error=str(e)
-                    ))
-        
-        return analyses
-    
-    def _analyze_file(
-        self,
-        file_change: FileChange,
-        repo_path: str,
-        complexity_threshold: int,
-        enable_security: bool,
-        enable_dead_code: bool
-    ) -> FileAnalysis:
-        """Analyze a single file."""
-        file_path = file_change.path
-        full_path = os.path.join(repo_path, file_path)
-        
-        # Initialize analysis
-        analysis = FileAnalysis(
-            file_path=file_path,
-            language="unknown",
-            total_lines=0,
-            code_lines=0
+        Runs the CPU-intensive parsing in a thread pool.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._parse_file_sync,
+            file_info
         )
+    
+    def _parse_file_sync(self, file_info: FileInfo) -> tuple:
+        """
+        Synchronously parse a single file.
         
+        Returns:
+            Tuple of (FileMetadata, symbols, call_entries, hotspots, ast_report, semantic_report)
+        """
         try:
-            # Read file content
-            if not os.path.exists(full_path):
-                analysis.parse_error = f"File not found: {full_path}"
-                return analysis
+            # Import report generators
+            from analysis_reports import generate_ast_report, generate_semantic_report
             
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            pipeline = self._get_pipeline()
             
-            lines = content.splitlines()
-            analysis.total_lines = len(lines)
-            analysis.code_lines = len([l for l in lines if l.strip() and not l.strip().startswith('#')])
+            # Determine language from file extension
+            language = self._detect_language(file_info.path)
+            if not language:
+                raise ValueError(f"Unsupported file type: {file_info.path}")
             
-            # Detect language
-            ext = Path(file_path).suffix.lower()
-            language = EXTENSION_MAP.get(ext, "unknown")
-            analysis.language = language
+            # Get source code
+            source_code = self._get_source_code(file_info)
+            if source_code is None:
+                raise ValueError(f"No source code available for: {file_info.path}")
             
-            if language == "unknown":
-                analysis.parse_error = f"Unsupported file type: {ext}"
-                return analysis
+            source_bytes = source_code.encode('utf-8') if isinstance(source_code, str) else source_code
             
-            # Run AST + Semantic pipeline
-            pipeline = AnalysisPipeline(language)
-            results = pipeline.run_full_pipeline(content)
+            # Parse AST
+            ast_tree = pipeline.parse_code(source_code, language)
+            if ast_tree is None:
+                raise ValueError(f"Failed to parse AST for: {file_info.path}")
             
-            # Extract functions from AST report
-            if results.get("ast_report"):
-                ast_report = results["ast_report"]
-                analysis.functions = self._extract_functions(ast_report, complexity_threshold)
-                analysis.imports = self._extract_imports(ast_report)
-                
-                # Calculate complexity metrics
-                if analysis.functions:
-                    complexities = [f.complexity for f in analysis.functions]
-                    analysis.avg_complexity = sum(complexities) / len(complexities)
-                    analysis.max_complexity = max(complexities)
-                    
-                    # Check for high complexity
-                    for func in analysis.functions:
-                        if func.complexity > complexity_threshold:
-                            analysis.complexity_issues.append(ComplexityIssue(
-                                function_name=func.name,
-                                line=func.start_line,
-                                complexity=func.complexity,
-                                threshold=complexity_threshold
-                            ))
+            # Build semantic graph
+            semantic_graph = pipeline.build_semantic()
             
-            # Extract classes and more from semantic report
-            if results.get("semantic_report"):
-                sem_report = results["semantic_report"]
-                analysis.classes = self._extract_classes(sem_report)
-                analysis.call_graph = self._extract_call_graph(sem_report)
-                analysis.inheritance_graph = self._extract_inheritance(sem_report)
+            # Generate reports
+            ast_report = generate_ast_report(ast_tree, source_bytes, language)
+            semantic_report = generate_semantic_report(semantic_graph) if semantic_graph else {}
             
-            # Security scanning
-            if enable_security:
-                analysis.security_issues = self._scan_security(content, language, lines)
+            # Extract metadata
+            file_meta = self._build_file_metadata(file_info, ast_report, semantic_report, language)
             
-            # Dead code detection
-            if enable_dead_code and results.get("ast_report"):
-                ast_report = results["ast_report"]
-                analysis.dead_code = self._detect_dead_code(ast_report)
+            # Extract symbols
+            symbols = self._extract_symbols(file_info.path, ast_report, semantic_report)
+            
+            # Build call graph entries
+            call_entries = self._extract_call_graph(file_info.path, semantic_report)
+            
+            # Find hotspots
+            hotspots = self._find_hotspots(file_info.path, ast_report, semantic_report)
+            
+            return (file_meta, symbols, call_entries, hotspots, ast_report, semantic_report)
             
         except Exception as e:
-            self._logger.error(f"Error parsing {file_path}: {e}")
-            analysis.parse_error = str(e)
-        
-        return analysis
+            log_with_data(logger, 40, f"Error parsing file: {file_info.path}", {
+                "file": file_info.path,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            })
+            raise
     
-    def _extract_functions(
-        self,
-        ast_report: Dict[str, Any],
-        complexity_threshold: int
-    ) -> List[FunctionInfo]:
-        """Extract function information from AST report."""
-        functions = []
+    def _detect_language(self, file_path: str) -> Optional[str]:
+        """Detect language from file extension."""
+        ext = Path(file_path).suffix.lower()
+        language_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".ts": "typescript",
+            ".tsx": "tsx",
+        }
+        return language_map.get(ext)
+    
+    def _get_source_code(self, file_info: FileInfo) -> Optional[str]:
+        """Get source code from FileInfo."""
+        if file_info.content:
+            return file_info.content
         
+        # Try to read from disk if path exists
+        if os.path.exists(file_info.path):
+            with open(file_info.path, 'r', encoding='utf-8', errors='replace') as f:
+                return f.read()
+        
+        return None
+    
+    def _build_file_metadata(
+        self,
+        file_info: FileInfo,
+        ast_report: Dict[str, Any],
+        semantic_report: Dict[str, Any],
+        language: str
+    ) -> FileMetadata:
+        """Build FileMetadata from reports."""
+        ast_summary = ast_report.get("summary", {})
+        semantic_summary = semantic_report.get("summary", {})
+        
+        # Calculate average complexity
+        functions = ast_report.get("functions", [])
+        if functions:
+            complexities = [f.get("complexity", 1) for f in functions]
+            avg_complexity = sum(complexities) / len(complexities)
+        else:
+            avg_complexity = 0.0
+        
+        # Count lines from content
+        line_count = 0
+        if file_info.content:
+            line_count = file_info.content.count('\n') + 1
+        elif os.path.exists(file_info.path):
+            with open(file_info.path, 'r', encoding='utf-8', errors='replace') as f:
+                line_count = sum(1 for _ in f)
+        
+        # Detect if file has tests
+        has_tests = self._detect_tests(file_info.path, ast_report)
+        
+        return FileMetadata(
+            path=file_info.path,
+            language=language,
+            line_count=line_count,
+            function_count=ast_summary.get("function_count", 0),
+            class_count=semantic_summary.get("class_count", 0),
+            import_count=ast_summary.get("import_statement_count", 0),
+            export_count=ast_summary.get("export_statement_count", 0),
+            complexity_score=round(avg_complexity, 2),
+            has_tests=has_tests,
+            summary={
+                "ast": ast_summary,
+                "semantic": semantic_summary,
+            },
+        )
+    
+    def _detect_tests(self, file_path: str, ast_report: Dict[str, Any]) -> bool:
+        """Detect if a file contains test code."""
+        file_name = Path(file_path).name.lower()
+        
+        # Check file name patterns
+        test_patterns = ["test_", "_test", ".test.", ".spec.", "tests/", "test/"]
+        if any(pattern in file_name for pattern in test_patterns):
+            return True
+        
+        # Check function names
+        functions = ast_report.get("functions", [])
+        for func in functions:
+            name = func.get("name", "").lower()
+            if name.startswith("test") or name.startswith("it_") or name == "describe":
+                return True
+        
+        return False
+    
+    def _extract_symbols(
+        self,
+        file_path: str,
+        ast_report: Dict[str, Any],
+        semantic_report: Dict[str, Any]
+    ) -> List[Symbol]:
+        """Extract Symbol objects from reports."""
+        symbols = []
+        
+        # Extract functions from AST report
         for func in ast_report.get("functions", []):
-            functions.append(FunctionInfo(
+            symbols.append(Symbol(
                 name=func.get("name", "<anonymous>"),
+                symbol_type=SymbolType.FUNCTION,
+                file_path=file_path,
                 start_line=func.get("start_line", 0),
-                end_line=func.get("end_line", 0),
-                complexity=func.get("complexity", 1),
+                end_line=func.get("end_line"),
                 parameters=func.get("parameters", []),
-                has_docstring=False,  # TODO: detect docstrings
+                complexity=func.get("complexity"),
             ))
         
-        return functions
-    
-    def _extract_imports(self, ast_report: Dict[str, Any]) -> List[ImportInfo]:
-        """Extract import information from AST report."""
-        imports = []
+        # Extract classes from semantic report
+        for cls in semantic_report.get("classes", []):
+            symbols.append(Symbol(
+                name=cls.get("name", "<anonymous>"),
+                symbol_type=SymbolType.CLASS,
+                file_path=file_path,
+                start_line=cls.get("start_line", 0),
+                end_line=cls.get("end_line"),
+                scope=cls.get("scope"),
+            ))
         
+        # Extract imports
         for imp in ast_report.get("imports_exports", []):
             if imp.get("kind") == "import":
-                statement = imp.get("statement", "")
-                imports.append(ImportInfo(
-                    module=statement,
-                    line=imp.get("start_line", 0),
-                    is_used=True  # Will be updated by dead code detection
+                symbols.append(Symbol(
+                    name=imp.get("statement", "")[:50],  # Truncate long imports
+                    symbol_type=SymbolType.IMPORT,
+                    file_path=file_path,
+                    start_line=imp.get("start_line", 0),
+                    end_line=imp.get("end_line"),
                 ))
         
-        return imports
-    
-    def _extract_classes(self, sem_report: Dict[str, Any]) -> List[ClassInfo]:
-        """Extract class information from semantic report."""
-        classes = []
+        # Extract exports
+        for exp in ast_report.get("imports_exports", []):
+            if exp.get("kind") == "export":
+                symbols.append(Symbol(
+                    name=exp.get("statement", "")[:50],
+                    symbol_type=SymbolType.EXPORT,
+                    file_path=file_path,
+                    start_line=exp.get("start_line", 0),
+                    end_line=exp.get("end_line"),
+                ))
         
-        for cls in sem_report.get("classes", []):
-            inherits = []
-            # Find inheritance from hierarchy
-            for hier in sem_report.get("inheritance_hierarchy", []):
-                if hier.get("class") == cls.get("name"):
-                    inherits = hier.get("inherits_from", [])
-                    break
-            
-            classes.append(ClassInfo(
-                name=cls.get("name", ""),
-                start_line=cls.get("start_line", 0),
-                end_line=cls.get("end_line", 0),
-                inherits_from=inherits,
+        return symbols
+    
+    def _extract_call_graph(
+        self,
+        file_path: str,
+        semantic_report: Dict[str, Any]
+    ) -> List[CallGraphEntry]:
+        """Extract call graph entries from semantic report."""
+        entries = []
+        
+        for call in semantic_report.get("call_graph", []):
+            entries.append(CallGraphEntry(
+                caller=f"{file_path}:{call.get('caller', '')}",
+                caller_file=file_path,
+                caller_line=0,  # Not always available
+                callees=call.get("calls", []),
             ))
         
-        return classes
+        return entries
     
-    def _extract_call_graph(self, sem_report: Dict[str, Any]) -> Dict[str, List[str]]:
-        """Extract call graph from semantic report."""
-        call_graph = {}
-        
-        for entry in sem_report.get("call_graph", []):
-            caller = entry.get("caller", "")
-            calls = entry.get("calls", [])
-            if caller:
-                call_graph[caller] = calls
-        
-        return call_graph
-    
-    def _extract_inheritance(self, sem_report: Dict[str, Any]) -> Dict[str, List[str]]:
-        """Extract inheritance hierarchy from semantic report."""
-        inheritance = {}
-        
-        for entry in sem_report.get("inheritance_hierarchy", []):
-            child = entry.get("class", "")
-            parents = entry.get("inherits_from", [])
-            if child:
-                inheritance[child] = parents
-        
-        return inheritance
-    
-    def _scan_security(
+    def _find_hotspots(
         self,
-        content: str,
-        language: str,
-        lines: List[str]
-    ) -> List[SecurityIssue]:
-        """Scan content for security vulnerabilities."""
-        issues = []
+        file_path: str,
+        ast_report: Dict[str, Any],
+        semantic_report: Dict[str, Any]
+    ) -> List[Hotspot]:
+        """Find code hotspots based on complexity metrics."""
+        hotspots = []
         
-        for pattern in self.security_patterns:
-            # Check if pattern applies to this language
-            if language not in pattern.languages:
-                continue
+        # Check function complexity
+        for func in ast_report.get("functions", []):
+            complexity = func.get("complexity", 0)
             
-            try:
-                regex = re.compile(pattern.pattern, re.IGNORECASE | re.MULTILINE)
-                
-                for match in regex.finditer(content):
-                    # Find line number
-                    line_num = content[:match.start()].count('\n') + 1
-                    
-                    # Get code snippet
-                    snippet = lines[line_num - 1] if line_num <= len(lines) else ""
-                    
-                    issues.append(SecurityIssue(
-                        type=pattern.type,
-                        severity=pattern.severity,
-                        line=line_num,
-                        description=pattern.description,
-                        recommendation=pattern.recommendation,
-                        code_snippet=snippet.strip(),
-                        cwe_id=pattern.cwe_id
-                    ))
-            except re.error as e:
-                self._logger.warning(f"Invalid regex pattern: {pattern.pattern}: {e}")
-        
-        # Deduplicate issues on same line with same type
-        seen = set()
-        unique_issues = []
-        for issue in issues:
-            key = (issue.type, issue.line)
-            if key not in seen:
-                seen.add(key)
-                unique_issues.append(issue)
-        
-        return unique_issues
-    
-    def _detect_dead_code(self, ast_report: Dict[str, Any]) -> List[DeadCodeInfo]:
-        """Detect unused code from AST report."""
-        dead_code = []
-        
-        # Analyze variables
-        for var in ast_report.get("variables", []):
-            declarations = var.get("declarations", [])
-            usages = var.get("usages", [])
-            name = var.get("name", "")
-            
-            # Skip common patterns that are intentionally unused
-            if name.startswith("_") or name in ("self", "cls", "args", "kwargs"):
-                continue
-            
-            # Variable declared but never used
-            if declarations and not usages:
-                dead_code.append(DeadCodeInfo(
-                    type=DeadCodeType.UNUSED_VARIABLE,
-                    name=name,
-                    line=declarations[0],
+            if complexity > COMPLEXITY_CRITICAL_THRESHOLD:
+                hotspots.append(Hotspot(
+                    file_path=file_path,
+                    symbol_name=func.get("name", "<anonymous>"),
+                    start_line=func.get("start_line", 0),
+                    end_line=func.get("end_line"),
+                    hotspot_type="high_complexity",
+                    severity="critical",
+                    metric_value=complexity,
+                    threshold=COMPLEXITY_CRITICAL_THRESHOLD,
+                    message=f"Function has critical complexity ({complexity}). Consider refactoring.",
                 ))
-        
-        # Analyze functions - check if they're called anywhere
-        # This is a simplified check - proper analysis would need cross-file analysis
-        functions = ast_report.get("functions", [])
-        variables = ast_report.get("variables", [])
-        
-        # Build set of all function names that are referenced
-        referenced_functions: Set[str] = set()
-        for var in variables:
-            usages = var.get("usages", [])
-            if usages:
-                referenced_functions.add(var.get("name", ""))
-        
-        for func in functions:
-            name = func.get("name", "")
+            elif complexity > COMPLEXITY_WARNING_THRESHOLD:
+                hotspots.append(Hotspot(
+                    file_path=file_path,
+                    symbol_name=func.get("name", "<anonymous>"),
+                    start_line=func.get("start_line", 0),
+                    end_line=func.get("end_line"),
+                    hotspot_type="high_complexity",
+                    severity="warning",
+                    metric_value=complexity,
+                    threshold=COMPLEXITY_WARNING_THRESHOLD,
+                    message=f"Function has high complexity ({complexity}). May be hard to maintain.",
+                ))
             
-            # Skip special methods and main entry points
-            if name.startswith("_") or name in ("main", "setup", "teardown"):
-                continue
+            # Check parameter count
+            params = func.get("parameters", [])
+            if len(params) > MANY_PARAMS_THRESHOLD:
+                hotspots.append(Hotspot(
+                    file_path=file_path,
+                    symbol_name=func.get("name", "<anonymous>"),
+                    start_line=func.get("start_line", 0),
+                    end_line=func.get("end_line"),
+                    hotspot_type="many_params",
+                    severity="warning",
+                    metric_value=len(params),
+                    threshold=MANY_PARAMS_THRESHOLD,
+                    message=f"Function has {len(params)} parameters. Consider using an options object.",
+                ))
             
-            # Skip if function name is used somewhere (could be a reference)
-            if name in referenced_functions:
-                continue
-            
-            # This is a heuristic - function defined but name not referenced
-            # Note: This has false positives for exported functions, callbacks, etc.
-            # In a real implementation, we'd need more sophisticated analysis
+            # Check function length
+            start = func.get("start_line", 0)
+            end = func.get("end_line", 0)
+            if start and end:
+                length = end - start
+                if length > LARGE_FUNCTION_LINES:
+                    hotspots.append(Hotspot(
+                        file_path=file_path,
+                        symbol_name=func.get("name", "<anonymous>"),
+                        start_line=start,
+                        end_line=end,
+                        hotspot_type="large_function",
+                        severity="warning",
+                        metric_value=length,
+                        threshold=LARGE_FUNCTION_LINES,
+                        message=f"Function is {length} lines long. Consider breaking it up.",
+                    ))
         
-        return dead_code
+        return hotspots
     
-    def _aggregate_stats(self, output: ParserOutput) -> None:
-        """Aggregate statistics across all analyzed files."""
-        output.total_files = len(output.files)
-        
-        total_functions = 0
-        total_classes = 0
-        total_security = 0
-        total_dead = 0
-        total_complexity = 0
-        files_with_issues = 0
-        complexity_sum = 0.0
-        
-        for f in output.files:
-            total_functions += len(f.functions)
-            total_classes += len(f.classes)
-            total_security += len(f.security_issues)
-            total_dead += len(f.dead_code)
-            total_complexity += len(f.complexity_issues)
-            complexity_sum += f.avg_complexity
-            
-            if f.security_issues or f.dead_code or f.complexity_issues:
-                files_with_issues += 1
-        
-        output.total_functions = total_functions
-        output.total_classes = total_classes
-        output.total_security_issues = total_security
-        output.total_dead_code = total_dead
-        output.total_complexity_issues = total_complexity
-        output.files_with_issues = files_with_issues
-        
-        if output.files:
-            output.avg_complexity = complexity_sum / len(output.files)
+    def __del__(self):
+        """Cleanup executor on deletion."""
+        if hasattr(self, '_executor'):
+            self._executor.shutdown(wait=False)

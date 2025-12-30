@@ -1,29 +1,22 @@
 """
-Subagents module
+Sub-agents module for the multi-agent code review system.
 
-Contains specialized agents for specific tasks within the code review pipeline.
+Contains:
+- BaseAgent: Abstract base class for all sub-agents
+- ParserAgent: Code parsing and structure extraction
+- ReviewAgent: Code review and issue detection
+- UnitTestAgent: Unit test generation
 """
 
-from .feedback_agent import FeedbackProcessor, LearningType, LearningCategory
-from .base_agent import BaseAgent, MockAgent
-from .parser_agent import ParserAgent, SECURITY_PATTERNS
-from .review_agent import ReviewAgent
-
-# Alias for consistency
-FeedbackAgent = FeedbackProcessor
+from .base_agent import BaseAgent, AgentConfig
+from .parser_agent import ParserAgent
+from .review_agent import CodeReviewAgent
+from .unit_test_agent import UnitTestAgent
 
 __all__ = [
-    # Feedback
-    "FeedbackProcessor",
-    "FeedbackAgent",  # Alias
-    "LearningType", 
-    "LearningCategory",
-    # Base
     "BaseAgent",
-    "MockAgent",
-    # Parser
+    "AgentConfig",
     "ParserAgent",
-    "SECURITY_PATTERNS",
-    # Review
-    "ReviewAgent",
+    "CodeReviewAgent",
+    "UnitTestAgent",
 ]

@@ -1,7 +1,6 @@
-from sqlalchemy import Column, Boolean, Integer, String, ARRAY, Text, DateTime, Float
+from sqlalchemy import Column, Boolean, Integer, String, Text, DateTime, Index
 from sqlalchemy.sql import func
 from .database import Base
-
 
 class User(Base):
     __tablename__ = "users"
@@ -12,14 +11,12 @@ class User(Base):
     sub = Column(Boolean, index=True, default=False)
     org = Column(String, index=True)
     
-
 class NewInstall(Base):
     __tablename__ = "new_install"
     
     id = Column(Integer, index=True, primary_key=True)
     name = Column(String, index=True)
     org = Column(String, index=True, default=None)
-
 
 class PullRequest(Base):
     __tablename__ = "pull_request"
@@ -30,103 +27,44 @@ class PullRequest(Base):
     pr_no = Column(Integer, index=True)
     branch = Column(String, index=True)
     cnt = Column(Integer, index=True, default=1)
-    changed_files = Column(ARRAY(String), default=None)
+    changed_files = Column(Text, default=None)  # Store as JSON string for SQLite compatibility
 
 
-class ReviewFeedback(Base):
+class AgentCheckpoint(Base):
     """
-    Stores user feedback on AI-generated review comments.
+    Stores agent workflow checkpoints for resumability.
     
-    Feedback types:
-    - reaction: User reacted with emoji (👍, 👎, etc.)
-    - reply: User replied with correction/suggestion
-    - command: User used @open-rabbit command
-    
-    This data is processed by FeedbackProcessor agent and 
-    converted to learnings stored in the Knowledge Base.
+    When an agent fails mid-workflow, we can resume from the last checkpoint
+    using the thread_id to restore state.
     """
-    __tablename__ = "review_feedback"
+    __tablename__ = "agent_checkpoints"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     
-    # GitHub identifiers
-    comment_id = Column(String(64), index=True, nullable=False)  # GitHub comment ID
-    review_session_id = Column(String(64), index=True)  # Links to agent checkpoint
+    # Thread ID for LangGraph - unique identifier for each workflow run
+    thread_id = Column(String(64), unique=True, index=True, nullable=False)
     
-    # Repository context
-    owner = Column(String(255), index=True, nullable=False)
-    repo = Column(String(255), index=True, nullable=False)
-    pr_number = Column(Integer, index=True, nullable=False)
-    
-    # Comment context
-    file_path = Column(String(512))  # File the comment was on
-    line_number = Column(Integer)  # Line number
-    ai_comment = Column(Text, nullable=False)  # The AI-generated comment
-    
-    # Feedback data
-    feedback_type = Column(String(32), index=True, nullable=False)  # reaction, reply, command
-    reaction_type = Column(String(32))  # thumbs_up, thumbs_down, etc.
-    user_feedback = Column(Text)  # User's reply text or command
-    github_user = Column(String(255), index=True)  # Who gave feedback
-    
-    # Reaction weighting
-    # Positive: 👍, ❤️, 🎉, 🚀 = +1.0
-    # Negative: 👎, 😕 = -1.0
-    # Neutral: 👀, ❓ = 0
-    reaction_weight = Column(Float, default=0.0)
-    
-    # Processing status
-    processed = Column(Boolean, default=False, index=True)  # Converted to KB learning
-    learning_id = Column(String(64))  # ID of created learning in KB
-    
-    # Extracted learning (filled by FeedbackProcessor)
-    extracted_learning = Column(Text)  # The learning statement
-    learning_category = Column(String(64))  # security, style, performance, etc.
-    learning_type = Column(String(64))  # correction, false_positive, style_preference, etc.
-    
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    processed_at = Column(DateTime(timezone=True))
-
-
-class KBLearning(Base):
-    """
-    Local cache/tracking of learnings sent to Knowledge Base.
-    The actual learning content is stored in Elasticsearch via KB service.
-    This table tracks what we've sent and allows for local queries.
-    """
-    __tablename__ = "kb_learnings"
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    
-    # KB identifiers
-    kb_id = Column(String(64), unique=True, index=True)  # ID from KB service
-    
-    # Scope
-    scope = Column(String(32), default="repo", index=True)  # repo, org, global
+    # PR context for easy lookup
     owner = Column(String(255), index=True)
     repo = Column(String(255), index=True)
+    pr_number = Column(Integer, index=True)
     
-    # Learning content
-    learning = Column(Text, nullable=False)
-    category = Column(String(64), index=True)  # security, style, performance, etc.
-    learning_type = Column(String(64), index=True)  # correction, false_positive, etc.
-    language = Column(String(64), index=True)  # python, typescript, etc.
-    file_pattern = Column(String(255))  # *.test.ts, etc.
+    # Workflow state
+    current_node = Column(String(64))  # e.g., "parse_intent", "run_parser", "run_review"
+    completed_nodes = Column(Text)  # JSON array of completed node names
     
-    # Source
-    source_pr = Column(String(255))  # owner/repo#123
-    source_feedback_id = Column(Integer)  # Links to ReviewFeedback.id
-    learnt_from = Column(String(255))  # GitHub username
+    # Full state snapshot (JSON)
+    state_data = Column(Text, nullable=False)  # JSON serialized workflow state
     
-    # Confidence (updated based on feedback)
-    confidence = Column(Float, default=0.5)
-    positive_reactions = Column(Integer, default=0)
-    negative_reactions = Column(Integer, default=0)
-    
-    # Status
-    active = Column(Boolean, default=True, index=True)  # Can be disabled
+    # Status tracking
+    status = Column(String(32), default="in_progress")  # in_progress, completed, failed
+    error_message = Column(Text)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Composite index for PR lookups
+    __table_args__ = (
+        Index('ix_checkpoint_pr_lookup', 'owner', 'repo', 'pr_number'),
+    )

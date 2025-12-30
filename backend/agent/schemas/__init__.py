@@ -1,80 +1,64 @@
 """
-Agent Schema Definitions
+Schemas module for agent input/output types.
 
-Pydantic models for agent inputs, outputs, and shared types.
+Provides structured data types for:
+- Parser Agent outputs (AST, semantic analysis)
+- Code Review Agent outputs (issues, suggestions)
+- Unit Test Agent outputs (generated tests)
+- Supervisor orchestration types
 """
 
-from .common import (
-    AgentStatus,
-    Severity,
-    IssueCategory,
-    FileChange,
-    ReviewRequest,
-    ReviewIssue,
-    PRContext,
-    KBContext,
-    SupervisorOutput,
-    SupervisorConfig,
-)
-
 from .parser_output import (
-    FunctionInfo,
-    ClassInfo,
-    VariableInfo,
-    ImportInfo,
-    SecurityIssue,
-    SecurityPattern,
-    DeadCodeInfo,
-    ComplexityIssue,
-    ParserInput,
+    FileMetadata,
+    Symbol,
+    SymbolType,
+    CallGraphEntry,
+    Hotspot,
     ParserOutput,
 )
 
 from .review_output import (
-    FileContent,
-    ReviewInput,
+    Severity,
+    ReviewIssue,
     ReviewOutput,
 )
 
 from .test_output import (
-    TestFramework,
-    TestType,
     GeneratedTest,
-    TestInput,
     TestOutput,
 )
 
+from .common import (
+    FileInfo,
+    KBContext,
+    ReviewRequest,
+    UserIntent,
+    SupervisorOutput,
+    AgentStatus,
+    CheckpointData,
+)
+
 __all__ = [
-    # Common
-    "AgentStatus",
-    "Severity", 
-    "IssueCategory",
-    "FileChange",
-    "ReviewRequest",
-    "ReviewIssue",
-    "PRContext",
-    "KBContext",
-    "SupervisorOutput",
-    "SupervisorConfig",
-    # Parser
-    "FunctionInfo",
-    "ClassInfo",
-    "VariableInfo",
-    "ImportInfo",
-    "SecurityIssue",
-    "SecurityPattern",
-    "DeadCodeInfo",
-    "ComplexityIssue",
-    "ParserInput",
+    # Parser outputs
+    "FileMetadata",
+    "Symbol",
+    "SymbolType",
+    "CallGraphEntry",
+    "Hotspot",
     "ParserOutput",
-    # Review
-    "FileContent",
-    "ReviewInput",
+    # Review outputs
+    "Severity",
+    "ReviewIssue",
     "ReviewOutput",
-    # Test
-    "TestFramework",
-    "TestType",
+    # Test outputs
     "GeneratedTest",
-    "TestInput",
     "TestOutput",
+    # Common types
+    "FileInfo",
+    "KBContext",
+    "ReviewRequest",
+    "UserIntent",
+    "SupervisorOutput",
+    "AgentStatus",
+    "CheckpointData",
 ]

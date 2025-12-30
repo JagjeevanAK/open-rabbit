@@ -1,20 +1,19 @@
 """
-Supervisor Module
+Supervisor module for the multi-agent code review system.
 
-Orchestrates the multi-agent code review pipeline:
-- SupervisorAgent: Main orchestration
-- Reducer: Merge and deduplicate results
-- KBFilter: Filter suggestions using Knowledge Base
+Contains:
+- IntentParser: Parse user requests to determine actions
+- ResultAggregator: Merge outputs from sub-agents
+- SupervisorAgent: Main LangGraph-based orchestrator with checkpointing
 """
 
-from agent.supervisor.reducer import Reducer, reduce_issues
-from agent.supervisor.kb_filter import KBFilter, filter_with_kb
-from agent.supervisor.supervisor_agent import SupervisorAgent
+from .intent_parser import IntentParser
+from .result_aggregator import ResultAggregator
+from .supervisor_agent import SupervisorAgent, SupervisorConfig
 
 __all__ = [
+    "IntentParser",
+    "ResultAggregator",
     "SupervisorAgent",
-    "Reducer",
-    "reduce_issues",
-    "KBFilter",
-    "filter_with_kb",
+    "SupervisorConfig",
 ]

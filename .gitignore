@@ -1,16 +1,21 @@
 .cursor
 *__pycache__
 *.env
+temp/
+/temp
+/sample
+test.txt
+
+# macOS
+.DS_Store
+**/.DS_Store
 
 # Test files
 *.db
-test.txt
-comment-test.log
+backend/test.db
 bot/test-output/
+comment-test.log
 
 # IDE
 .vscode/
 .idea/
-
-# OS
-.DS_Store

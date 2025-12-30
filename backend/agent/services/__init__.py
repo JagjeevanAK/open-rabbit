@@ -1,12 +1,12 @@
 """
-Services module
+Services module for the agent.
 
-Contains service clients for external integrations.
+Contains external service integrations.
 """
 
-from .kb_client import KnowledgeBaseClient, get_kb_client
+from .kb_client import KBClient, KBClientConfig
 
 __all__ = [
-    "KnowledgeBaseClient",
-    "get_kb_client",
+    "KBClient",
+    "KBClientConfig",
 ]

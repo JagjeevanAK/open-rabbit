@@ -1,475 +1,410 @@
 """
 Knowledge Base Client
 
-Backend client for communicating with the Knowledge Base service.
-Used to store and retrieve learnings from user feedback.
+Async client for interacting with the Knowledge Base service.
+Supports:
+- Querying for relevant learnings based on code context
+- Adding new learnings from reviews
+- Health checks
 """
 
-import os
+import asyncio
 import logging
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+import os
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 import httpx
+
+from ..schemas.common import KBContext, FileInfo
 
 logger = logging.getLogger(__name__)
 
 
-class KnowledgeBaseClient:
-    """
-    Client for interacting with the Knowledge Base service.
+@dataclass
+class KBClientConfig:
+    """Configuration for Knowledge Base client."""
     
-    The KB service stores learnings extracted from user feedback
-    and provides semantic search for context during reviews.
+    # KB service URL (defaults to localhost for development)
+    base_url: str = field(
+        default_factory=lambda: os.getenv("KB_SERVICE_URL", "http://localhost:8000")
+    )
+    
+    # Elasticsearch direct connection (optional, for advanced queries)
+    elasticsearch_url: Optional[str] = field(
+        default_factory=lambda: os.getenv("ELASTICSEARCH_URL")
+    )
+    
+    # Timeouts
+    connect_timeout: float = 5.0
+    read_timeout: float = 30.0
+    
+    # Retry settings
+    max_retries: int = 3
+    retry_delay: float = 1.0
+    
+    # OpenAI settings for embeddings (used for direct ES queries)
+    openai_api_key: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENAI_API_KEY")
+    )
+    embedding_model: str = "text-embedding-3-small"
+
+
+class KBClient:
+    """
+    Async client for the Knowledge Base service.
+    
+    The KB stores code learnings and insights that can be used
+    to provide context-aware code reviews.
+    
+    Example:
+        ```python
+        client = KBClient()
+        
+        # Query for relevant learnings
+        context = await client.query_context(
+            file_paths=["src/main.py"],
+            code_snippets=["def process_data(...)"],
+            pr_context="Adding caching layer"
+        )
+        
+        # Add a new learning
+        await client.add_learning(
+            learning="Always use connection pooling for database connections",
+            learnt_from="JohnDoe",
+            pr="org/repo#123",
+            file="src/db.py:45-60"
+        )
+        ```
     """
     
-    def __init__(self, base_url: Optional[str] = None, timeout: float = 30.0):
+    def __init__(self, config: Optional[KBClientConfig] = None):
         """
         Initialize the KB client.
         
         Args:
-            base_url: Base URL of the KB service
-            timeout: Request timeout in seconds
+            config: Client configuration. Uses defaults if not provided.
         """
-        self.base_url = base_url or os.getenv("KNOWLEDGE_BASE_URL", "http://localhost:8000")
-        self.timeout = timeout
-        # KB_ENABLED=true to enable, anything else (or missing) disables
-        self.enabled = os.getenv("KB_ENABLED", "false").lower() == "true"
-        
-        self._client = httpx.Client(
-            base_url=self.base_url,
-            timeout=timeout,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        logger.info(f"KB client initialized: url={self.base_url}, enabled={self.enabled}")
+        self.config = config or KBClientConfig()
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._es_store = None
     
-    async def _async_client(self) -> httpx.AsyncClient:
-        """Get async client for async operations"""
-        return httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=self.timeout,
-            headers={"Content-Type": "application/json"}
-        )
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        """Lazy-initialize HTTP client."""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                base_url=self.config.base_url,
+                timeout=httpx.Timeout(
+                    connect=self.config.connect_timeout,
+                    read=self.config.read_timeout,
+                    write=self.config.read_timeout,
+                    pool=self.config.connect_timeout,
+                ),
+            )
+        return self._http_client
     
-    def health_check(self) -> bool:
-        """Check if KB service is healthy"""
-        if not self.enabled:
-            return False
+    async def close(self):
+        """Close the HTTP client."""
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
+    
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+    
+    async def health_check(self) -> bool:
+        """
+        Check if the KB service is healthy.
         
+        Returns:
+            True if service is available, False otherwise.
+        """
         try:
-            response = self._client.get("/health")
+            response = await self.http_client.get("/")
             return response.status_code == 200
         except Exception as e:
             logger.warning(f"KB health check failed: {e}")
             return False
     
-    async def async_health_check(self) -> bool:
-        """Async health check"""
-        if not self.enabled:
-            return False
-        
-        try:
-            async with await self._async_client() as client:
-                response = await client.get("/health")
-                return response.status_code == 200
-        except Exception as e:
-            logger.warning(f"KB async health check failed: {e}")
-            return False
-    
-    def store_learning(
+    async def query_context(
         self,
-        learning: str,
-        category: str,
-        learning_type: str,
-        owner: str,
-        repo: str,
-        source_pr: str,
-        learnt_from: str,
-        confidence: float = 0.5,
-        language: Optional[str] = None,
-        file_pattern: Optional[str] = None,
-        scope: str = "repo",
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Optional[Dict[str, Any]]:
+        file_paths: Optional[List[str]] = None,
+        code_snippets: Optional[List[str]] = None,
+        pr_context: Optional[str] = None,
+        max_learnings: int = 5,
+    ) -> KBContext:
         """
-        Store a new learning in the Knowledge Base.
+        Query the Knowledge Base for relevant context.
+        
+        Builds a query from the provided code context and retrieves
+        relevant learnings that can inform the code review.
         
         Args:
-            learning: The learning statement
-            category: Category (security, style, performance, etc.)
-            learning_type: Type (correction, false_positive, etc.)
-            owner: Repository owner
-            repo: Repository name
-            source_pr: Source PR reference (owner/repo#number)
-            learnt_from: GitHub username who provided feedback
-            confidence: Confidence score (0.0 - 1.0)
-            language: Programming language (optional)
-            file_pattern: File pattern (optional)
-            scope: Scope of learning (repo, org, global)
-            metadata: Additional metadata
+            file_paths: List of file paths being reviewed
+            code_snippets: Key code snippets for context
+            pr_context: PR title/description for additional context
+            max_learnings: Maximum number of learnings to retrieve
             
         Returns:
-            Response from KB service with learning_id, or None on failure
+            KBContext with relevant learnings
         """
-        if not self.enabled:
-            logger.debug("KB disabled, skipping store_learning")
-            return None
+        # Build query from context
+        query_parts = []
         
-        # Format payload to match KB service's LearningRequest schema
+        if pr_context:
+            query_parts.append(pr_context)
+        
+        if file_paths:
+            # Extract meaningful parts from file paths
+            for path in file_paths:
+                # Get file name and parent directory
+                parts = path.split("/")
+                if len(parts) >= 2:
+                    query_parts.append(" ".join(parts[-2:]))
+                else:
+                    query_parts.append(parts[-1])
+        
+        if code_snippets:
+            # Add first 200 chars of each snippet
+            for snippet in code_snippets[:3]:  # Limit to 3 snippets
+                query_parts.append(snippet[:200])
+        
+        if not query_parts:
+            logger.debug("No query context provided, returning empty KBContext")
+            return KBContext()
+        
+        query = " ".join(query_parts)
+        
+        # Try direct Elasticsearch query first (more control)
+        if self.config.elasticsearch_url and self.config.openai_api_key:
+            try:
+                return await self._query_elasticsearch(query, max_learnings)
+            except Exception as e:
+                logger.warning(f"Direct ES query failed, falling back to API: {e}")
+        
+        # Fall back to KB API
+        return await self._query_api(query, max_learnings)
+    
+    async def _query_elasticsearch(
+        self,
+        query: str,
+        max_learnings: int,
+    ) -> KBContext:
+        """
+        Query Elasticsearch directly using vector similarity.
+        
+        This provides more control over the query and results.
+        """
+        try:
+            from langchain_openai import OpenAIEmbeddings
+            from langchain_elasticsearch import ElasticsearchStore
+        except ImportError:
+            logger.warning("langchain-elasticsearch not installed, using API fallback")
+            return await self._query_api(query, max_learnings)
+        
+        # Create embeddings instance (uses OPENAI_API_KEY env var by default)
+        embeddings = OpenAIEmbeddings(
+            model=self.config.embedding_model,
+        )
+        
+        # Connect to Elasticsearch
+        vectorstore = ElasticsearchStore(
+            es_url=self.config.elasticsearch_url,
+            index_name=os.getenv("KB_INDEX_NAME", "open_rabbit_knowledge_base"),
+            embedding=embeddings,
+        )
+        
+        # Perform similarity search
+        docs = await asyncio.to_thread(
+            vectorstore.similarity_search,
+            query,
+            k=max_learnings,
+        )
+        
+        # Convert to Learning dicts (matching KBContext.learnings schema)
+        learnings = []
+        for doc in docs:
+            learning = {
+                "content": doc.page_content,
+                "learnt_from": doc.metadata.get("learnt_from"),
+                "pr": doc.metadata.get("pr"),
+                "file": doc.metadata.get("file"),
+                "timestamp": doc.metadata.get("timestamp"),
+                "relevance_score": doc.metadata.get("score", 0.0),
+            }
+            learnings.append(learning)
+        
+        return KBContext(
+            learnings=learnings,
+            query_used=query,
+        )
+    
+    async def _query_api(
+        self,
+        query: str,
+        max_learnings: int,
+    ) -> KBContext:
+        """
+        Query the KB API for relevant learnings.
+        
+        Note: The current KB API doesn't have a query endpoint,
+        so this is a placeholder for future implementation.
+        """
+        # The KB service currently only has write endpoints
+        # A query endpoint would need to be added
+        logger.info(f"KB API query not implemented, query: {query[:100]}...")
+        
+        # Return empty context for now
+        return KBContext(
+            learnings=[],
+            query_used=query,
+            source="api",
+        )
+    
+    async def add_learning(
+        self,
+        learning: str,
+        learnt_from: Optional[str] = None,
+        pr: Optional[str] = None,
+        file: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Add a new learning to the Knowledge Base.
+        
+        Args:
+            learning: The insight or learning to store
+            learnt_from: Source/author of the learning
+            pr: Related PR reference (e.g., "org/repo#123")
+            file: Related file reference (e.g., "path/to/file.py:10-20")
+            
+        Returns:
+            Task ID for tracking the async processing, or None on failure
+        """
         payload = {
             "learning": learning,
             "learnt_from": learnt_from,
-            "pr": source_pr,
-            "file": file_pattern,
-            "timestamp": datetime.utcnow().isoformat(),
-            # Store additional metadata in the learning text itself for now
-            # since KB service has a simpler schema
+            "pr": pr,
+            "file": file,
         }
         
-        # Enrich the learning text with category/type info
-        enriched_learning = f"[{category}] [{learning_type}] {learning}"
-        if language:
-            enriched_learning = f"[{language}] {enriched_learning}"
-        payload["learning"] = enriched_learning
+        # Remove None values
+        payload = {k: v for k, v in payload.items() if v is not None}
         
-        try:
-            response = self._client.post("/learnings", json=payload)
-            response.raise_for_status()
-            result = response.json()
-            # KB service returns task_id, use that as learning_id
-            learning_id = result.get("task_id")
-            logger.info(f"Stored learning in KB: {learning_id}")
-            return {"learning_id": learning_id, **result}
-        except httpx.HTTPStatusError as e:
-            logger.error(f"KB store_learning HTTP error: {e.response.status_code} - {e.response.text}")
-            return None
-        except Exception as e:
-            logger.error(f"KB store_learning failed: {e}")
-            return None
+        for attempt in range(self.config.max_retries):
+            try:
+                response = await self.http_client.post(
+                    "/learnings",
+                    json=payload,
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    logger.info(f"Learning queued with task ID: {data.get('task_id')}")
+                    return data.get("task_id")
+                else:
+                    logger.warning(
+                        f"Failed to add learning: {response.status_code} - {response.text}"
+                    )
+                    
+            except httpx.RequestError as e:
+                logger.warning(f"Request failed (attempt {attempt + 1}): {e}")
+                if attempt < self.config.max_retries - 1:
+                    await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+        
+        return None
     
-    async def async_store_learning(
-        self,
-        learning: str,
-        category: str,
-        learning_type: str,
-        owner: str,
-        repo: str,
-        source_pr: str,
-        learnt_from: str,
-        confidence: float = 0.5,
-        language: Optional[str] = None,
-        file_pattern: Optional[str] = None,
-        scope: str = "repo",
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Async version of store_learning"""
-        if not self.enabled:
-            return None
-        
-        # Format payload to match KB service's LearningRequest schema
-        payload = {
-            "learning": learning,
-            "learnt_from": learnt_from,
-            "pr": source_pr,
-            "file": file_pattern,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-        
-        # Enrich the learning text with category/type info
-        enriched_learning = f"[{category}] [{learning_type}] {learning}"
-        if language:
-            enriched_learning = f"[{language}] {enriched_learning}"
-        payload["learning"] = enriched_learning
-        
-        try:
-            async with await self._async_client() as client:
-                response = await client.post("/learnings", json=payload)
-                response.raise_for_status()
-                result = response.json()
-                learning_id = result.get("task_id")
-                logger.info(f"Stored learning in KB: {learning_id}")
-                return {"learning_id": learning_id, **result}
-        except Exception as e:
-            logger.error(f"KB async_store_learning failed: {e}")
-            return None
-    
-    def search_learnings(
-        self,
-        query: str,
-        owner: str,
-        repo: str,
-        k: int = 5,
-        category: Optional[str] = None,
-        language: Optional[str] = None,
-        min_confidence: float = 0.3,
-        include_org_learnings: bool = True
-    ) -> List[Dict[str, Any]]:
-        """
-        Search for relevant learnings in the Knowledge Base.
-        
-        Args:
-            query: Search query (semantic search)
-            owner: Repository owner
-            repo: Repository name
-            k: Number of results to return
-            category: Filter by category
-            language: Filter by language
-            min_confidence: Minimum confidence threshold
-            include_org_learnings: Include org-level learnings
-            
-        Returns:
-            List of matching learnings
-        """
-        if not self.enabled:
-            return []
-        
-        params = {
-            "q": query,
-            "owner": owner,
-            "repo": repo,
-            "k": k,
-            "min_confidence": min_confidence,
-            "include_org": include_org_learnings
-        }
-        
-        if category:
-            params["category"] = category
-        if language:
-            params["language"] = language
-        
-        try:
-            response = self._client.get("/learnings/search", params=params)
-            response.raise_for_status()
-            result = response.json()
-            learnings = result.get("learnings", [])
-            logger.info(f"Found {len(learnings)} learnings for query: {query[:50]}...")
-            return learnings
-        except Exception as e:
-            logger.error(f"KB search_learnings failed: {e}")
-            return []
-    
-    async def async_search_learnings(
-        self,
-        query: str,
-        owner: str,
-        repo: str,
-        k: int = 5,
-        category: Optional[str] = None,
-        language: Optional[str] = None,
-        min_confidence: float = 0.3,
-        include_org_learnings: bool = True
-    ) -> List[Dict[str, Any]]:
-        """Async version of search_learnings"""
-        if not self.enabled:
-            return []
-        
-        params = {
-            "q": query,
-            "owner": owner,
-            "repo": repo,
-            "k": k,
-            "min_confidence": min_confidence,
-            "include_org": include_org_learnings
-        }
-        
-        if category:
-            params["category"] = category
-        if language:
-            params["language"] = language
-        
-        try:
-            async with await self._async_client() as client:
-                response = await client.get("/learnings/search", params=params)
-                response.raise_for_status()
-                result = response.json()
-                return result.get("learnings", [])
-        except Exception as e:
-            logger.error(f"KB async_search_learnings failed: {e}")
-            return []
-    
-    def get_pr_context_learnings(
-        self,
-        owner: str,
-        repo: str,
-        pr_description: str,
-        changed_files: List[str],
-        k: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        Get contextual learnings relevant to a PR.
-        
-        This is used during code review to fetch learnings
-        that might be relevant to the current PR being reviewed.
-        
-        Args:
-            owner: Repository owner
-            repo: Repository name
-            pr_description: PR description/title
-            changed_files: List of changed file paths
-            k: Number of learnings to retrieve
-            
-        Returns:
-            List of relevant learnings
-        """
-        if not self.enabled:
-            return []
-        
-        payload = {
-            "owner": owner,
-            "repo": repo,
-            "pr_description": pr_description,
-            "changed_files": changed_files,
-            "k": k
-        }
-        
-        try:
-            response = self._client.post("/learnings/pr-context", json=payload)
-            response.raise_for_status()
-            result = response.json()
-            # Response is {"query": "...", "total": N, "learnings": [...]}
-            learnings = result.get("learnings", [])
-            logger.info(f"Retrieved {len(learnings)} contextual learnings for PR")
-            return learnings
-        except Exception as e:
-            logger.error(f"KB get_pr_context_learnings failed: {e}")
-            return []
-    
-    async def async_get_pr_context_learnings(
-        self,
-        owner: str,
-        repo: str,
-        pr_description: str,
-        changed_files: List[str],
-        k: int = 10
-    ) -> List[Dict[str, Any]]:
-        """Async version of get_pr_context_learnings"""
-        if not self.enabled:
-            return []
-        
-        payload = {
-            "owner": owner,
-            "repo": repo,
-            "pr_description": pr_description,
-            "changed_files": changed_files,
-            "k": k
-        }
-        
-        try:
-            async with await self._async_client() as client:
-                response = await client.post("/learnings/pr-context", json=payload)
-                response.raise_for_status()
-                result = response.json()
-                # Response is {"query": "...", "total": N, "learnings": [...]}
-                return result.get("learnings", [])
-        except Exception as e:
-            logger.error(f"KB async_get_pr_context_learnings failed: {e}")
-            return []
-    
-    def update_learning_feedback(
-        self,
-        learning_id: str,
-        positive: bool
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Update a learning based on additional feedback.
-        
-        Args:
-            learning_id: ID of the learning in KB
-            positive: True for positive feedback, False for negative
-            
-        Returns:
-            Updated learning info or None on failure
-        """
-        if not self.enabled:
-            return None
-        
-        payload = {
-            "learning_id": learning_id,
-            "feedback": "positive" if positive else "negative",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        try:
-            response = self._client.post("/learnings/feedback", json=payload)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error(f"KB update_learning_feedback failed: {e}")
-            return None
-    
-    def deactivate_learning(self, learning_id: str) -> bool:
-        """
-        Deactivate a learning (soft delete).
-        
-        Args:
-            learning_id: ID of the learning to deactivate
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.enabled:
-            return False
-        
-        try:
-            response = self._client.delete(f"/learnings/{learning_id}")
-            response.raise_for_status()
-            logger.info(f"Deactivated learning: {learning_id}")
-            return True
-        except Exception as e:
-            logger.error(f"KB deactivate_learning failed: {e}")
-            return False
-    
-    def format_learnings_for_prompt(
+    async def add_learnings_batch(
         self,
         learnings: List[Dict[str, Any]],
-        max_learnings: int = 5
-    ) -> str:
+    ) -> List[Optional[str]]:
         """
-        Format learnings for inclusion in LLM prompt.
+        Add multiple learnings in batch.
         
         Args:
-            learnings: List of learnings from KB
-            max_learnings: Maximum number to include
+            learnings: List of learning dicts with keys:
+                - learning: str (required)
+                - learnt_from: str (optional)
+                - pr: str (optional)
+                - file: str (optional)
+                
+        Returns:
+            List of task IDs (None for failed submissions)
+        """
+        payload = [
+            {k: v for k, v in learning.items() if v is not None}
+            for learning in learnings
+        ]
+        
+        try:
+            response = await self.http_client.post(
+                "/learnings/batch",
+                json=payload,
+            )
+            
+            if response.status_code == 200:
+                results = response.json()
+                return [r.get("task_id") if r.get("status") == "queued" else None for r in results]
+            else:
+                logger.warning(f"Batch add failed: {response.status_code}")
+                return [None] * len(learnings)
+                
+        except httpx.RequestError as e:
+            logger.warning(f"Batch request failed: {e}")
+            return [None] * len(learnings)
+    
+    async def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Check the status of a learning processing task.
+        
+        Args:
+            task_id: The task ID returned from add_learning
             
         Returns:
-            Formatted string for prompt
+            Task status dict with keys: task_id, status, result
         """
-        if not learnings:
-            return ""
-        
-        lines = ["\n## Relevant Learnings from Past Reviews\n"]
-        lines.append("Consider these learnings when reviewing:\n")
-        
-        for i, learning in enumerate(learnings[:max_learnings], 1):
-            text = learning.get("learning", learning.get("learning_text", ""))
-            # KB returns 'score' from search, use that as confidence
-            score = learning.get("score", learning.get("confidence", learning.get("confidence_score", 0.5)))
-            learnt_from = learning.get("learnt_from", "unknown")
+        try:
+            response = await self.http_client.get(f"/tasks/{task_id}")
             
-            lines.append(f"{i}. {text}")
-            lines.append(f"   _(Source: {learnt_from}, Relevance: {score:.0%})_\n")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.warning(f"Failed to get task status: {response.status_code}")
+                return None
+                
+        except httpx.RequestError as e:
+            logger.warning(f"Task status request failed: {e}")
+            return None
+    
+    @staticmethod
+    def build_file_reference(path: str, start_line: int, end_line: int) -> str:
+        """
+        Build a file reference string for a learning.
         
-        return "\n".join(lines)
+        Args:
+            path: File path
+            start_line: Starting line number
+            end_line: Ending line number
+            
+        Returns:
+            File reference in format "path/to/file.py:10-20"
+        """
+        return f"{path}:{start_line}-{end_line}"
     
-    def close(self):
-        """Close the HTTP client"""
-        self._client.close()
-    
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, *args):
-        self.close()
-
-
-# Singleton instance
-_kb_client: Optional[KnowledgeBaseClient] = None
-
-
-def get_kb_client() -> KnowledgeBaseClient:
-    """Get the global KB client instance"""
-    global _kb_client
-    if _kb_client is None:
-        _kb_client = KnowledgeBaseClient()
-    return _kb_client
+    @staticmethod
+    def build_pr_reference(owner: str, repo: str, pr_number: int) -> str:
+        """
+        Build a PR reference string for a learning.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            pr_number: PR number
+            
+        Returns:
+            PR reference in format "owner/repo#123"
+        """
+        return f"{owner}/{repo}#{pr_number}"

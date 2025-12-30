@@ -1,263 +1,278 @@
 """
 Parser Agent Output Schemas
 
-Defines the output structures for the Parser Agent including:
-- AST analysis results
-- Semantic graph summaries
-- Security issues
-- Dead code detection
-- Complexity metrics
+Defines structured output types for the Parser Agent which handles:
+- AST parsing and summarization
+- Semantic graph construction
+- Symbol extraction
+- Call graph building
+- Hotspot detection (complexity analysis)
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from dataclasses import dataclass, field
 from enum import Enum
-
-from .common import Severity, IssueCategory, ReviewIssue, FileChange
-
-
-class SecurityIssueType(str, Enum):
-    """Types of security issues"""
-    SQL_INJECTION = "sql_injection"
-    XSS = "xss"
-    COMMAND_INJECTION = "command_injection"
-    PATH_TRAVERSAL = "path_traversal"
-    HARDCODED_SECRET = "hardcoded_secret"
-    INSECURE_RANDOM = "insecure_random"
-    WEAK_CRYPTO = "weak_crypto"
-    UNSAFE_DESERIALIZATION = "unsafe_deserialization"
-    SSRF = "ssrf"
-    XXE = "xxe"
-    OPEN_REDIRECT = "open_redirect"
-    SENSITIVE_DATA_EXPOSURE = "sensitive_data_exposure"
-    INSECURE_DEPENDENCY = "insecure_dependency"
-    DEBUG_ENABLED = "debug_enabled"
-    OTHER = "other"
+from typing import List, Dict, Optional, Any
 
 
-class DeadCodeType(str, Enum):
-    """Types of dead/unused code"""
-    UNUSED_VARIABLE = "unused_variable"
-    UNUSED_FUNCTION = "unused_function"
-    UNUSED_IMPORT = "unused_import"
-    UNUSED_PARAMETER = "unused_parameter"
-    UNUSED_CLASS = "unused_class"
-    UNREACHABLE_CODE = "unreachable_code"
+class SymbolType(str, Enum):
+    """Types of code symbols that can be extracted."""
+    FUNCTION = "function"
+    CLASS = "class"
+    METHOD = "method"
+    VARIABLE = "variable"
+    CONSTANT = "constant"
+    IMPORT = "import"
+    EXPORT = "export"
+    INTERFACE = "interface"
+    TYPE_ALIAS = "type_alias"
+    DECORATOR = "decorator"
 
 
-class FunctionInfo(BaseModel):
-    """Information about a function/method"""
-    name: str
-    start_line: int
-    end_line: int
-    complexity: int = Field(default=1, description="Cyclomatic complexity")
-    parameters: List[str] = Field(default_factory=list)
-    return_type: Optional[str] = None
-    has_docstring: bool = False
-    is_async: bool = False
-    is_generator: bool = False
-    is_exported: bool = False
-    decorators: List[str] = Field(default_factory=list)
-    calls: List[str] = Field(default_factory=list, description="Functions this function calls")
-
-
-class ClassInfo(BaseModel):
-    """Information about a class"""
-    name: str
-    start_line: int
-    end_line: int
-    methods: List[str] = Field(default_factory=list)
-    inherits_from: List[str] = Field(default_factory=list)
-    has_docstring: bool = False
-    is_exported: bool = False
-    decorators: List[str] = Field(default_factory=list)
-    properties: List[str] = Field(default_factory=list)
-
-
-class VariableInfo(BaseModel):
-    """Information about a variable"""
-    name: str
-    line: int
-    scope: str = "global"
-    is_used: bool = True
-    is_exported: bool = False
-    type_annotation: Optional[str] = None
-    declaration_count: int = 1
-    usage_count: int = 0
-    usage_lines: List[int] = Field(default_factory=list)
-
-
-class ImportInfo(BaseModel):
-    """Information about an import statement"""
-    module: str
-    items: List[str] = Field(default_factory=list, description="Imported items, empty for module import")
-    alias: Optional[str] = None
-    line: int
-    is_used: bool = True
-
-
-class SecurityIssue(BaseModel):
-    """A security issue found by static analysis"""
-    type: SecurityIssueType
-    severity: Severity
-    line: int
-    column: Optional[int] = None
-    description: str
-    recommendation: str
-    code_snippet: Optional[str] = None
-    cwe_id: Optional[str] = Field(default=None, description="CWE identifier if applicable")
+@dataclass
+class FileMetadata:
+    """
+    Metadata about a parsed file.
     
-    def to_review_issue(self, file_path: str) -> ReviewIssue:
-        """Convert to ReviewIssue format"""
-        return ReviewIssue(
-            file_path=file_path,
-            line_start=self.line,
-            severity=self.severity,
-            category=IssueCategory.SECURITY,
-            title=f"Security: {self.type.value.replace('_', ' ').title()}",
-            message=self.description,
-            suggestion=self.recommendation,
-            code_snippet=self.code_snippet,
-            confidence=0.9,
-            source="parser"
-        )
-
-
-class SecurityPattern(BaseModel):
-    """Pattern for detecting security issues"""
-    type: SecurityIssueType
-    severity: Severity
-    pattern: str = Field(..., description="Regex pattern to match")
-    description: str
-    recommendation: str
-    languages: List[str] = Field(default_factory=lambda: ["python", "javascript", "typescript"])
-    cwe_id: Optional[str] = None
-
-
-class DeadCodeInfo(BaseModel):
-    """Information about dead/unused code"""
-    type: DeadCodeType
-    name: str
-    line: int
-    scope: str = "global"
-    
-    def to_review_issue(self, file_path: str) -> ReviewIssue:
-        """Convert to ReviewIssue format"""
-        type_label = self.type.value.replace("_", " ")
-        return ReviewIssue(
-            file_path=file_path,
-            line_start=self.line,
-            severity=Severity.LOW,
-            category=IssueCategory.DEAD_CODE,
-            title=f"Unused: {type_label}",
-            message=f"'{self.name}' appears to be unused and can be removed.",
-            suggestion=f"Remove the unused {type_label} '{self.name}' to improve code clarity.",
-            confidence=0.7,
-            source="parser"
-        )
-
-
-class ComplexityIssue(BaseModel):
-    """High complexity warning"""
-    function_name: str
-    line: int
-    complexity: int
-    threshold: int = 10
-    
-    def to_review_issue(self, file_path: str) -> ReviewIssue:
-        """Convert to ReviewIssue format"""
-        severity = Severity.HIGH if self.complexity > 20 else Severity.MEDIUM
-        return ReviewIssue(
-            file_path=file_path,
-            line_start=self.line,
-            severity=severity,
-            category=IssueCategory.COMPLEXITY,
-            title=f"High Complexity: {self.function_name}",
-            message=f"Function '{self.function_name}' has cyclomatic complexity of {self.complexity} (threshold: {self.threshold}).",
-            suggestion="Consider breaking this function into smaller, more focused functions.",
-            confidence=0.95,
-            source="parser"
-        )
-
-
-class ParserInput(BaseModel):
-    """Input to the Parser Agent"""
-    changed_files: List[FileChange]
-    repo_path: str = Field(..., description="Path to the cloned repository")
-    
-    # Configuration
-    complexity_threshold: int = Field(default=10)
-    enable_security_scan: bool = Field(default=True)
-    enable_dead_code_detection: bool = Field(default=True)
-
-
-class FileAnalysis(BaseModel):
-    """Analysis results for a single file"""
-    file_path: str
+    Contains high-level information about the file structure
+    without the full content.
+    """
+    path: str
     language: str
-    total_lines: int
-    code_lines: int
+    line_count: int
+    function_count: int
+    class_count: int
+    import_count: int
+    export_count: int
+    complexity_score: float  # Average complexity across functions
+    has_tests: bool = False
     
-    # AST Analysis
-    functions: List[FunctionInfo] = Field(default_factory=list)
-    classes: List[ClassInfo] = Field(default_factory=list)
-    imports: List[ImportInfo] = Field(default_factory=list)
-    variables: List[VariableInfo] = Field(default_factory=list)
+    # Optional detailed summaries
+    summary: Optional[Dict[str, Any]] = None
     
-    # Semantic Analysis
-    call_graph: Dict[str, List[str]] = Field(default_factory=dict)
-    inheritance_graph: Dict[str, List[str]] = Field(default_factory=dict)
-    
-    # Issues
-    security_issues: List[SecurityIssue] = Field(default_factory=list)
-    dead_code: List[DeadCodeInfo] = Field(default_factory=list)
-    complexity_issues: List[ComplexityIssue] = Field(default_factory=list)
-    
-    # Metrics
-    avg_complexity: float = Field(default=0.0)
-    max_complexity: int = Field(default=0)
-    
-    # Errors during parsing
-    parse_error: Optional[str] = None
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "path": self.path,
+            "language": self.language,
+            "line_count": self.line_count,
+            "function_count": self.function_count,
+            "class_count": self.class_count,
+            "import_count": self.import_count,
+            "export_count": self.export_count,
+            "complexity_score": self.complexity_score,
+            "has_tests": self.has_tests,
+            "summary": self.summary,
+        }
 
 
-class ParserOutput(BaseModel):
-    """Output from the Parser Agent"""
-    files: List[FileAnalysis] = Field(default_factory=list)
+@dataclass
+class Symbol:
+    """
+    A code symbol extracted from parsing.
     
-    # Aggregated stats
-    total_files: int = Field(default=0)
-    total_functions: int = Field(default=0)
-    total_classes: int = Field(default=0)
-    total_security_issues: int = Field(default=0)
-    total_dead_code: int = Field(default=0)
-    total_complexity_issues: int = Field(default=0)
+    Represents functions, classes, variables, imports, etc.
+    """
+    name: str
+    symbol_type: SymbolType
+    file_path: str
+    start_line: int
+    end_line: Optional[int] = None
+    scope: Optional[str] = None  # e.g., "global", "class:MyClass"
+    signature: Optional[str] = None  # For functions/methods
+    parameters: List[str] = field(default_factory=list)
+    return_type: Optional[str] = None
+    docstring: Optional[str] = None
+    complexity: Optional[int] = None
+    modifiers: List[str] = field(default_factory=list)  # public, private, async, etc.
     
-    # Overall metrics
-    avg_complexity: float = Field(default=0.0)
-    files_with_issues: int = Field(default=0)
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "symbol_type": self.symbol_type.value,
+            "file_path": self.file_path,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "scope": self.scope,
+            "signature": self.signature,
+            "parameters": self.parameters,
+            "return_type": self.return_type,
+            "docstring": self.docstring,
+            "complexity": self.complexity,
+            "modifiers": self.modifiers,
+        }
+
+
+@dataclass
+class CallGraphEntry:
+    """
+    An entry in the call graph showing function relationships.
+    """
+    caller: str  # Full path: "file.py:function_name" or "file.py:ClassName.method"
+    caller_file: str
+    caller_line: int
+    callees: List[str] = field(default_factory=list)  # List of called function names
     
-    # Errors
-    failed_files: List[str] = Field(default_factory=list)
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "caller": self.caller,
+            "caller_file": self.caller_file,
+            "caller_line": self.caller_line,
+            "callees": self.callees,
+        }
+
+
+@dataclass
+class Hotspot:
+    """
+    A code hotspot indicating potential complexity or issues.
     
-    def get_all_issues(self) -> List[ReviewIssue]:
-        """Get all issues as ReviewIssue objects"""
-        issues = []
-        for file_analysis in self.files:
-            # Security issues
-            for sec in file_analysis.security_issues:
-                issues.append(sec.to_review_issue(file_analysis.file_path))
-            # Dead code
-            for dead in file_analysis.dead_code:
-                issues.append(dead.to_review_issue(file_analysis.file_path))
-            # Complexity issues
-            for comp in file_analysis.complexity_issues:
-                issues.append(comp.to_review_issue(file_analysis.file_path))
-        return issues
+    Detected based on:
+    - High cyclomatic complexity (> 10)
+    - Large function size
+    - Deep nesting
+    - Many parameters
+    """
+    file_path: str
+    symbol_name: str
+    start_line: int
+    end_line: Optional[int]
+    hotspot_type: str  # "high_complexity", "large_function", "deep_nesting", "many_params"
+    severity: str  # "warning", "critical"
+    metric_value: float  # The actual measured value
+    threshold: float  # The threshold that was exceeded
+    message: str
     
-    def get_file_analysis(self, file_path: str) -> Optional[FileAnalysis]:
-        """Get analysis for a specific file"""
-        for f in self.files:
-            if f.file_path == file_path:
-                return f
-        return None
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "symbol_name": self.symbol_name,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "hotspot_type": self.hotspot_type,
+            "severity": self.severity,
+            "metric_value": self.metric_value,
+            "threshold": self.threshold,
+            "message": self.message,
+        }
+
+
+@dataclass
+class ParserOutput:
+    """
+    Complete output from the Parser Agent.
+    
+    This is the structured metadata returned after parsing,
+    NOT prose or review comments.
+    
+    Example:
+    {
+        "files": [...],
+        "symbols": [...],
+        "call_graph": {...},
+        "hotspots": [...]
+    }
+    """
+    files: List[FileMetadata] = field(default_factory=list)
+    symbols: List[Symbol] = field(default_factory=list)
+    call_graph: List[CallGraphEntry] = field(default_factory=list)
+    hotspots: List[Hotspot] = field(default_factory=list)
+    
+    # Raw reports for downstream agents
+    ast_reports: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # file_path -> ast_report
+    semantic_reports: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # file_path -> semantic_report
+    
+    # Parsing errors (non-fatal)
+    errors: List[Dict[str, str]] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "files": [f.to_dict() for f in self.files],
+            "symbols": [s.to_dict() for s in self.symbols],
+            "call_graph": [c.to_dict() for c in self.call_graph],
+            "hotspots": [h.to_dict() for h in self.hotspots],
+            "ast_reports": self.ast_reports,
+            "semantic_reports": self.semantic_reports,
+            "errors": self.errors,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ParserOutput":
+        """Reconstruct ParserOutput from dictionary (for checkpointing)."""
+        return cls(
+            files=[
+                FileMetadata(
+                    path=f["path"],
+                    language=f["language"],
+                    line_count=f["line_count"],
+                    function_count=f["function_count"],
+                    class_count=f["class_count"],
+                    import_count=f["import_count"],
+                    export_count=f["export_count"],
+                    complexity_score=f["complexity_score"],
+                    has_tests=f.get("has_tests", False),
+                    summary=f.get("summary"),
+                )
+                for f in data.get("files", [])
+            ],
+            symbols=[
+                Symbol(
+                    name=s["name"],
+                    symbol_type=SymbolType(s["symbol_type"]),
+                    file_path=s["file_path"],
+                    start_line=s["start_line"],
+                    end_line=s.get("end_line"),
+                    scope=s.get("scope"),
+                    signature=s.get("signature"),
+                    parameters=s.get("parameters", []),
+                    return_type=s.get("return_type"),
+                    docstring=s.get("docstring"),
+                    complexity=s.get("complexity"),
+                    modifiers=s.get("modifiers", []),
+                )
+                for s in data.get("symbols", [])
+            ],
+            call_graph=[
+                CallGraphEntry(
+                    caller=c["caller"],
+                    caller_file=c["caller_file"],
+                    caller_line=c["caller_line"],
+                    callees=c.get("callees", []),
+                )
+                for c in data.get("call_graph", [])
+            ],
+            hotspots=[
+                Hotspot(
+                    file_path=h["file_path"],
+                    symbol_name=h["symbol_name"],
+                    start_line=h["start_line"],
+                    end_line=h.get("end_line"),
+                    hotspot_type=h["hotspot_type"],
+                    severity=h["severity"],
+                    metric_value=h["metric_value"],
+                    threshold=h["threshold"],
+                    message=h["message"],
+                )
+                for h in data.get("hotspots", [])
+            ],
+            ast_reports=data.get("ast_reports", {}),
+            semantic_reports=data.get("semantic_reports", {}),
+            errors=data.get("errors", []),
+        )
+    
+    def get_symbols_by_file(self, file_path: str) -> List[Symbol]:
+        """Get all symbols for a specific file."""
+        return [s for s in self.symbols if s.file_path == file_path]
+    
+    def get_functions(self) -> List[Symbol]:
+        """Get all function symbols."""
+        return [s for s in self.symbols if s.symbol_type in (SymbolType.FUNCTION, SymbolType.METHOD)]
+    
+    def get_classes(self) -> List[Symbol]:
+        """Get all class symbols."""
+        return [s for s in self.symbols if s.symbol_type == SymbolType.CLASS]
+    
+    def get_high_complexity_functions(self, threshold: int = 10) -> List[Symbol]:
+        """Get functions with complexity above threshold."""
+        return [
+            s for s in self.get_functions()
+            if s.complexity is not None and s.complexity > threshold
+        ]
