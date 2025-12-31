@@ -102,10 +102,10 @@ class TestResultAggregator:
         review_output = ReviewOutput(
             issues=[
                 ReviewIssue(
-                    file_path="main.py",
-                    line_number=10,
-                    severity=Severity.WARNING,
-                    category=IssueCategory.CODE_QUALITY,
+                    file="main.py",
+                    line=10,
+                    severity=Severity.LOW,
+                    category=IssueCategory.DOCUMENTATION,
                     message="Consider adding docstring",
                 )
             ]

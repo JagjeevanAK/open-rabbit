@@ -645,6 +645,7 @@ class SupervisorAgent:
         
         request_dict = state.get("request", {})
         files = [FileInfo.from_dict(f) for f in request_dict.get("files", [])]
+        valid_lines = request_dict.get("valid_lines")  # Get valid lines from request
         
         parser_output = ParserOutput.from_dict(state.get("parser_output", {}))
         kb_context = KBContext.from_dict(state.get("kb_context", {}))
@@ -663,6 +664,7 @@ class SupervisorAgent:
             parsed_metadata=parser_output,
             kb_context=kb_context,
             files=files,
+            valid_lines=valid_lines,  # Pass valid_lines to review agent
         )
         
         duration_ms = (time.perf_counter() - start_time) * 1000

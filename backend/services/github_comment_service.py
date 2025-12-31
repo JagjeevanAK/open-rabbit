@@ -248,7 +248,8 @@ class GitHubCommentService:
         """
         formatted_review = review_result.get("formatted_review", {})
         
-        summary = formatted_review.get("summary", "")
+        # Support both "body" (new format from CommentFormatterAgent) and "summary" (legacy)
+        summary = formatted_review.get("body") or formatted_review.get("summary", "")
         comments = formatted_review.get("comments", [])
         
         # Add footer to summary

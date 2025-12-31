@@ -37,3 +37,9 @@ dependencies = [
     # E2B Sandbox for secure code execution
     "e2b-code-interpreter>=1.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]

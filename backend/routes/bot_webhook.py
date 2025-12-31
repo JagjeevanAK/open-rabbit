@@ -2,20 +2,15 @@
 Bot Webhook Routes
 
 Endpoints for the GitHub bot to trigger code reviews and other operations.
-Includes comprehensive production logging for tracking review workflows.
+Uses E2B sandbox for all repository operations (no local cloning).
 """
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from pathlib import Path
 import uuid
-import logging
-import shutil
-import subprocess
 import os
 import time
-import json
 
 from agent import (
     SupervisorAgent,
@@ -29,8 +24,13 @@ from agent.logging_config import (
     set_session_id,
     log_with_data,
     setup_logging,
-    AsyncLogContext,
 )
+from agent.services.sandbox_manager import (
+    SandboxManager,
+    SandboxOperationError,
+    create_sandbox_manager,
+)
+from agent.subagents.comment_formatter_agent import CommentFormatterAgent
 from models import (
     ReviewRequest,
     UnitTestRequest,
@@ -50,9 +50,16 @@ router = APIRouter(prefix="/bot", tags=["bot"])
 # Task storage (in-memory for now, use Redis in production)
 bot_tasks: Dict[str, Dict[str, Any]] = {}
 
-# Temp directory in project root
-PROJECT_ROOT = Path(__file__).parent.parent.parent  # open-rabbit/
-TEMP_DIR = PROJECT_ROOT / "temp"
+# Global sandbox manager (lazy-initialized)
+_sandbox_manager: Optional[SandboxManager] = None
+
+
+def _get_sandbox_manager() -> SandboxManager:
+    """Get or create the global sandbox manager."""
+    global _sandbox_manager
+    if _sandbox_manager is None:
+        _sandbox_manager = create_sandbox_manager()
+    return _sandbox_manager
 
 
 def _create_supervisor(use_mock: bool = False, task_id: str = "") -> SupervisorAgent:
@@ -79,10 +86,11 @@ def _create_supervisor(use_mock: bool = False, task_id: str = "") -> SupervisorA
 @router.get("/health", response_model=HealthResponse)
 def health_check():
     """Health check endpoint for bot service"""
+    e2b_configured = bool(os.getenv("E2B_API_KEY"))
     return HealthResponse(
         status="healthy",
         service="open-rabbit-backend",
-        mock_llm=False  # Real LLM is always used now
+        mock_llm=False,  # Real LLM is always used now
     )
 
 
@@ -103,6 +111,7 @@ async def trigger_review(request: ReviewRequest, background_tasks: BackgroundTas
         "changed_files_count": len(request.changed_files) if request.changed_files else 0,
         "test_mode": request.test_mode,
         "dry_run": request.dry_run,
+        "is_fork": request.head_owner != request.owner if request.head_owner else False,
     })
     
     bot_tasks[task_id] = {
@@ -206,109 +215,35 @@ async def delete_task(task_id: str):
     return {"message": f"Task {task_id} deleted"}
 
 
-def _clone_repo(owner: str, repo: str, branch: str, dest_path: Path) -> bool:
-    """
-    Clone a GitHub repository to the specified path.
-    
-    Args:
-        owner: Repository owner
-        repo: Repository name
-        branch: Branch to clone
-        dest_path: Destination directory
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    repo_url = f"https://github.com/{owner}/{repo}.git"
-    
-    cmd = [
-        "git", "clone",
-        "--branch", branch,
-        "--depth", "1",  # Shallow clone for speed
-        repo_url,
-        str(dest_path)
-    ]
-    
-    try:
-        start_time = time.perf_counter()
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120  # 2 minute timeout
-        )
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        
-        if result.returncode != 0:
-            log_with_data(logger, 40, "Git clone failed", {
-                "owner": owner,
-                "repo": repo,
-                "branch": branch,
-                "returncode": result.returncode,
-                "stderr": result.stderr[:500] if result.stderr else None,
-                "duration_ms": round(duration_ms, 2),
-            })
-            return False
-        
-        log_with_data(logger, 20, "Git clone successful", {
-            "owner": owner,
-            "repo": repo,
-            "branch": branch,
-            "dest_path": str(dest_path),
-            "duration_ms": round(duration_ms, 2),
-        })
-        return True
-        
-    except subprocess.TimeoutExpired:
-        log_with_data(logger, 40, "Git clone timed out", {
-            "owner": owner,
-            "repo": repo,
-            "branch": branch,
-            "timeout_seconds": 120,
-        })
-        return False
-    except Exception as e:
-        log_with_data(logger, 40, f"Git clone error: {e}", {
-            "owner": owner,
-            "repo": repo,
-            "branch": branch,
-            "error": str(e),
-            "error_type": type(e).__name__,
-        })
-        return False
-
-
-def _read_file_content(file_path: Path) -> Optional[str]:
-    """Read file content, returns None if file can't be read."""
-    try:
-        # Skip large files (>500KB)
-        if file_path.stat().st_size > 500_000:
-            logger.warning(f"Skipping large file: {file_path}")
-            return None
-            
-        return file_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        logger.warning(f"Cannot decode file (binary?): {file_path}")
-        return None
-    except Exception as e:
-        logger.warning(f"Cannot read file {file_path}: {e}")
-        return None
-
-
 async def _execute_review(task_id: str, request: ReviewRequest):
-    """Background task to execute code review using SupervisorAgent."""
-    repo_path = None
+    """
+    Background task to execute code review using E2B Sandbox.
+    
+    Flow:
+    1. Create E2B sandbox
+    2. Clone repo (with fork/upstream support)
+    3. Get diff and valid lines
+    4. Read changed files
+    5. Run SupervisorAgent for review
+    6. Run CommentFormatterAgent for formatting
+    7. Post to GitHub
+    8. Cleanup sandbox
+    """
+    sandbox_manager = None
     workflow_start = time.perf_counter()
     
     # Set session ID for log correlation
     set_session_id(task_id)
     
-    log_with_data(logger, 20, "Starting review execution", {
+    log_with_data(logger, 20, "Starting review execution with E2B sandbox", {
         "task_id": task_id,
         "owner": request.owner,
         "repo": request.repo,
         "pr_number": request.pr_number,
         "branch": request.branch,
+        "base_branch": request.base_branch,
+        "head_owner": request.head_owner,
+        "head_repo": request.head_repo,
         "changed_files_count": len(request.changed_files) if request.changed_files else 0,
         "test_mode": request.test_mode,
         "dry_run": request.dry_run,
@@ -317,63 +252,121 @@ async def _execute_review(task_id: str, request: ReviewRequest):
     try:
         bot_tasks[task_id]["status"] = "running"
         
-        # Create temp directory in project root if it doesn't exist
-        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        # Initialize sandbox manager
+        try:
+            sandbox_manager = _get_sandbox_manager()
+        except ValueError as e:
+            log_with_data(logger, 40, "E2B not configured", {
+                "task_id": task_id,
+                "error": str(e),
+            })
+            raise Exception("E2B_API_KEY not configured. E2B sandbox is required for reviews.")
         
-        # Create unique directory for this repo clone
-        clone_id = f"{request.owner}_{request.repo}_{task_id[:8]}"
-        repo_path = TEMP_DIR / clone_id
+        # Create sandbox for this session
+        sandbox_start = time.perf_counter()
+        await sandbox_manager.create_sandbox(
+            session_id=task_id,
+            metadata={"pr": f"{request.owner}/{request.repo}#{request.pr_number}"}
+        )
+        sandbox_duration_ms = (time.perf_counter() - sandbox_start) * 1000
         
-        # Clean up if exists from previous failed run
-        if repo_path.exists():
-            shutil.rmtree(repo_path)
-        
-        # Clone the repository
-        clone_start = time.perf_counter()
-        log_with_data(logger, 20, "Cloning repository", {
+        log_with_data(logger, 20, "Sandbox created", {
             "task_id": task_id,
-            "owner": request.owner,
-            "repo": request.repo,
-            "branch": request.branch,
-            "dest_path": str(repo_path),
+            "duration_ms": round(sandbox_duration_ms, 2),
         })
         
-        if not _clone_repo(request.owner, request.repo, request.branch, repo_path):
-            raise Exception(f"Failed to clone repository {request.owner}/{request.repo}")
+        # Determine clone parameters (fork vs same-repo)
+        fork_owner = request.head_owner or request.owner
+        fork_repo = request.head_repo or request.repo
+        base_branch = request.base_branch or "main"
+        is_fork = fork_owner != request.owner or fork_repo != request.repo
+        
+        # Clone repository in sandbox
+        clone_start = time.perf_counter()
+        log_with_data(logger, 20, "Cloning repository in sandbox", {
+            "task_id": task_id,
+            "fork_owner": fork_owner,
+            "fork_repo": fork_repo,
+            "branch": request.branch,
+            "base_owner": request.owner,
+            "base_repo": request.repo,
+            "base_branch": base_branch,
+            "is_fork": is_fork,
+        })
+        
+        repo_path = await sandbox_manager.clone_fork_repo(
+            session_id=task_id,
+            fork_owner=fork_owner,
+            fork_repo=fork_repo,
+            branch=request.branch,
+            base_owner=request.owner,
+            base_repo=request.repo,
+            base_branch=base_branch,
+        )
         
         clone_duration_ms = (time.perf_counter() - clone_start) * 1000
-        log_with_data(logger, 20, "Repository cloned successfully", {
+        log_with_data(logger, 20, "Repository cloned in sandbox", {
             "task_id": task_id,
+            "repo_path": repo_path,
             "duration_ms": round(clone_duration_ms, 2),
         })
         
-        # Read only the changed files
+        # Get valid lines and diff text from sandbox
+        diff_start = time.perf_counter()
+        valid_lines = await sandbox_manager.get_diff(
+            session_id=task_id,
+            base_branch=base_branch,
+            changed_files=request.changed_files,
+        )
+        diff_text_per_file = await sandbox_manager.get_diff_text(
+            session_id=task_id,
+            base_branch=base_branch,
+            changed_files=request.changed_files,
+        )
+        diff_duration_ms = (time.perf_counter() - diff_start) * 1000
+        
+        log_with_data(logger, 20, "Git diff parsed", {
+            "task_id": task_id,
+            "files_with_valid_lines": len(valid_lines),
+            "total_valid_lines": sum(len(lines) for lines in valid_lines.values()),
+            "duration_ms": round(diff_duration_ms, 2),
+        })
+        
+        # Read changed files from sandbox
         files: List[FileInfo] = []
         skipped_files = []
+        
         if request.changed_files:
             for file_path in request.changed_files:
-                full_path = repo_path / file_path
+                full_path = f"{repo_path}/{file_path}"
                 
-                if not full_path.exists():
-                    skipped_files.append({"path": file_path, "reason": "not_found"})
-                    continue
-                
-                content = _read_file_content(full_path)
-                if content is None:
-                    skipped_files.append({"path": file_path, "reason": "unreadable"})
-                    continue
+                try:
+                    content = await sandbox_manager.read_file(task_id, full_path)
                     
-                files.append(FileInfo(
-                    path=file_path,
-                    content=content,
-                    language=_detect_language(file_path),
-                ))
+                    # Skip large files (>500KB)
+                    if len(content) > 500_000:
+                        skipped_files.append({"path": file_path, "reason": "too_large"})
+                        continue
+                    
+                    # Get diff text for this file
+                    file_diff = diff_text_per_file.get(file_path)
+                    
+                    files.append(FileInfo(
+                        path=file_path,
+                        content=content,
+                        diff=file_diff,
+                        language=_detect_language(file_path),
+                    ))
+                    
+                except SandboxOperationError as e:
+                    skipped_files.append({"path": file_path, "reason": str(e)[:50]})
+                    continue
         
-        log_with_data(logger, 20, "Files loaded for review", {
+        log_with_data(logger, 20, "Files loaded from sandbox", {
             "task_id": task_id,
             "files_loaded": len(files),
             "files_skipped": len(skipped_files),
-            "skipped_details": skipped_files[:5] if skipped_files else [],  # Log first 5
+            "skipped_details": skipped_files[:5],
             "languages": list(set(f.language for f in files)),
         })
         
@@ -387,9 +380,11 @@ async def _execute_review(task_id: str, request: ReviewRequest):
             repo_url=f"https://github.com/{request.owner}/{request.repo}",
             pr_number=request.pr_number,
             branch=request.branch,
+            base_branch=base_branch,
+            valid_lines=valid_lines if valid_lines else None,
         )
         
-        # Run supervisor agent
+        # Run supervisor agent for review
         agent_start = time.perf_counter()
         log_with_data(logger, 20, "Invoking SupervisorAgent", {
             "task_id": task_id,
@@ -403,11 +398,43 @@ async def _execute_review(task_id: str, request: ReviewRequest):
         log_with_data(logger, 20, "SupervisorAgent completed", {
             "task_id": task_id,
             "status": output.status.value if output.status else "unknown",
+            "issues_found": output.review_output.total_issues if output.review_output else 0,
             "duration_ms": round(agent_duration_ms, 2),
-            "session_id": output.session_id,
         })
         
-        # Convert output to result format
+        # Run Comment Formatter Agent
+        formatter_start = time.perf_counter()
+        formatter_result = None
+        
+        if output.review_output and output.review_output.issues:
+            log_with_data(logger, 20, "Running CommentFormatterAgent", {
+                "task_id": task_id,
+                "raw_comments": len(output.review_output.issues),
+            })
+            
+            # Create formatter input from review output
+            formatter_input = CommentFormatterAgent.from_review_output(
+                review_output=output.review_output,
+                valid_lines=valid_lines,
+                diff_text_per_file=diff_text_per_file,
+                max_comments=20,
+            )
+            
+            # Run formatter - returns AgentResult with output field containing FormatterOutput
+            formatter_agent = CommentFormatterAgent()
+            agent_result = await formatter_agent.run(formatter_input)
+            formatter_result = agent_result.output  # Extract the actual FormatterOutput
+            
+            formatter_duration_ms = (time.perf_counter() - formatter_start) * 1000
+            if formatter_result:
+                log_with_data(logger, 20, "CommentFormatterAgent completed", {
+                    "task_id": task_id,
+                    "inline_comments": len(formatter_result.inline_comments),
+                    "dropped_comments": len(formatter_result.dropped_comments),
+                    "duration_ms": round(formatter_duration_ms, 2),
+                })
+        
+        # Build result
         result = {
             "status": output.status.value if output.status else "completed",
             "repo_url": f"{request.owner}/{request.repo}",
@@ -416,29 +443,38 @@ async def _execute_review(task_id: str, request: ReviewRequest):
             "files_reviewed": len(files),
             "session_id": output.session_id,
             "duration_seconds": output.duration_seconds,
-            "formatted_review": output.to_github_review(),
             "review_output": output.review_output.to_dict() if output.review_output else None,
             "parser_output": output.parser_output.to_dict() if output.parser_output else None,
         }
+        
+        # Use formatted output if available, otherwise fallback
+        if formatter_result:
+            result["formatted_review"] = formatter_result.to_github_review()
+            result["formatting_stats"] = {
+                "total_raw_comments": formatter_result.total_raw_comments,
+                "comments_on_valid_lines": formatter_result.comments_on_valid_lines,
+                "inline_comments_posted": len(formatter_result.inline_comments),
+                "comments_dropped": len(formatter_result.dropped_comments),
+            }
+        else:
+            result["formatted_review"] = output.to_github_review()
         
         bot_tasks[task_id]["status"] = "completed"
         bot_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
         bot_tasks[task_id]["result"] = result
         
         total_duration_ms = (time.perf_counter() - workflow_start) * 1000
-        review_issues = output.review_output.total_issues if output.review_output else 0
         
         log_with_data(logger, 20, "Review task completed successfully", {
             "task_id": task_id,
             "status": "completed",
             "files_reviewed": len(files),
-            "review_issues": review_issues,
+            "review_issues": output.review_output.total_issues if output.review_output else 0,
+            "inline_comments": len(formatter_result.inline_comments) if formatter_result else 0,
             "total_duration_ms": round(total_duration_ms, 2),
-            "clone_duration_ms": round(clone_duration_ms, 2),
-            "agent_duration_ms": round(agent_duration_ms, 2),
         })
         
-        # Post review results back to GitHub via bot
+        # Post review results to GitHub
         await _post_review_to_github(request, result)
         
     except Exception as e:
@@ -457,18 +493,16 @@ async def _execute_review(task_id: str, request: ReviewRequest):
         bot_tasks[task_id]["error"] = str(e)
         
     finally:
-        # Clean up cloned repo
-        if repo_path and repo_path.exists():
+        # Clean up sandbox
+        if sandbox_manager:
             try:
-                shutil.rmtree(repo_path)
-                log_with_data(logger, 10, "Cleaned up repo directory", {
+                await sandbox_manager.kill_sandbox(task_id)
+                log_with_data(logger, 10, "Sandbox cleaned up", {
                     "task_id": task_id,
-                    "path": str(repo_path),
                 })
             except Exception as e:
-                log_with_data(logger, 30, f"Failed to clean up repo directory: {e}", {
+                log_with_data(logger, 30, f"Failed to cleanup sandbox: {e}", {
                     "task_id": task_id,
-                    "path": str(repo_path),
                     "error": str(e),
                 })
 
@@ -487,6 +521,7 @@ async def _post_review_to_github(request: ReviewRequest, result: Dict[str, Any])
             "pr_number": request.pr_number,
             "test_mode": request.test_mode,
             "dry_run": request.dry_run,
+            "has_inline_comments": bool(result.get("formatted_review", {}).get("comments")),
         })
         
         response = service.post_review_from_result(
@@ -516,6 +551,7 @@ async def _post_review_to_github(request: ReviewRequest, result: Dict[str, Any])
                     "repo": request.repo,
                     "pr_number": request.pr_number,
                     "comment_id": response.get("comment_id"),
+                    "inline_comments": response.get("comments_posted", 0),
                     "duration_ms": round(duration_ms, 2),
                 })
         else:
@@ -538,28 +574,33 @@ async def _post_review_to_github(request: ReviewRequest, result: Dict[str, Any])
 
 
 async def _execute_unit_test_generation(task_id: str, request: UnitTestRequest, test_branch: str):
-    """Background task to generate unit tests using SupervisorAgent."""
-    repo_path = None
+    """Background task to generate unit tests using E2B Sandbox."""
+    sandbox_manager = None
     
     try:
         bot_tasks[task_id]["status"] = "running"
         
-        # Create temp directory in project root if it doesn't exist
-        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        # Initialize sandbox manager
+        try:
+            sandbox_manager = _get_sandbox_manager()
+        except ValueError as e:
+            raise Exception("E2B_API_KEY not configured. E2B sandbox is required.")
         
-        # Create unique directory for this repo clone
-        clone_id = f"{request.owner}_{request.repo}_test_{task_id[:8]}"
-        repo_path = TEMP_DIR / clone_id
+        # Create sandbox
+        await sandbox_manager.create_sandbox(session_id=task_id)
         
-        # Clean up if exists from previous failed run
-        if repo_path.exists():
-            shutil.rmtree(repo_path)
+        # Clone repository
+        repo_path = await sandbox_manager.clone_fork_repo(
+            session_id=task_id,
+            fork_owner=request.owner,
+            fork_repo=request.repo,
+            branch=request.branch,
+            base_owner=request.owner,
+            base_repo=request.repo,
+            base_branch="main",
+        )
         
-        logger.info(f"Cloning {request.owner}/{request.repo}@{request.branch} to {repo_path}")
-        
-        # Clone the repository
-        if not _clone_repo(request.owner, request.repo, request.branch, repo_path):
-            raise Exception(f"Failed to clone repository {request.owner}/{request.repo}")
+        logger.info(f"Cloned {request.owner}/{request.repo}@{request.branch} to sandbox")
         
         # For unit tests, we scan and read relevant source files
         # TODO: Implement smarter file selection based on the request
@@ -568,7 +609,7 @@ async def _execute_unit_test_generation(task_id: str, request: UnitTestRequest, 
         # Create agent request with explicit test generation request
         agent_request = AgentReviewRequest(
             files=files,
-            user_request="Generate unit tests for this code",  # This triggers test generation
+            user_request="Generate unit tests for this code",
             repo_url=f"https://github.com/{request.owner}/{request.repo}",
             branch=request.branch,
         )
@@ -601,13 +642,12 @@ async def _execute_unit_test_generation(task_id: str, request: UnitTestRequest, 
         bot_tasks[task_id]["error"] = str(e)
         
     finally:
-        # Clean up cloned repo
-        if repo_path and repo_path.exists():
+        # Clean up sandbox
+        if sandbox_manager:
             try:
-                shutil.rmtree(repo_path)
-                logger.info(f"Cleaned up repo directory: {repo_path}")
+                await sandbox_manager.kill_sandbox(task_id)
             except Exception as e:
-                logger.warning(f"Failed to clean up repo directory: {e}")
+                logger.warning(f"Failed to cleanup sandbox: {e}")
 
 
 def _detect_language(file_path: str) -> str:
