@@ -9,6 +9,7 @@ Responsibilities:
 - Build semantic graphs (imports, calls, inheritance)
 - Extract symbols (functions, classes, methods)
 - Identify hotspots (high complexity areas)
+- Support both local filesystem and sandbox environments
 
 Constraints:
 - Does NOT do code review
@@ -21,7 +22,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor
 
 from .base_agent import BaseAgent, AgentConfig
@@ -39,6 +40,9 @@ from ..logging_config import (
     get_session_id,
     log_with_data,
 )
+
+if TYPE_CHECKING:
+    from ..services.sandbox_manager import SandboxManager
 
 logger = get_logger(__name__)
 
@@ -65,11 +69,25 @@ class ParserAgent(BaseAgent[ParserOutput]):
     3. Generate AST and Semantic reports
     4. Extract symbols and identify hotspots
     
+    Supports both local filesystem and E2B sandbox environments.
+    
     NO LLM calls are made - this is pure static analysis.
     """
     
-    def __init__(self, config: Optional[AgentConfig] = None):
-        """Initialize the Parser Agent."""
+    def __init__(
+        self, 
+        config: Optional[AgentConfig] = None,
+        sandbox_manager: Optional["SandboxManager"] = None,
+        session_id: Optional[str] = None,
+    ):
+        """
+        Initialize the Parser Agent.
+        
+        Args:
+            config: Agent configuration
+            sandbox_manager: Optional SandboxManager for reading files from E2B sandbox
+            session_id: Session ID for sandbox operations
+        """
         if config is None:
             config = AgentConfig(
                 name="parser_agent",
@@ -79,6 +97,8 @@ class ParserAgent(BaseAgent[ParserOutput]):
         super().__init__(config)
         self._pipeline = None
         self._executor = ThreadPoolExecutor(max_workers=4)
+        self._sandbox_manager = sandbox_manager
+        self._session_id = session_id
     
     @property
     def name(self) -> str:
@@ -111,11 +131,19 @@ class ParserAgent(BaseAgent[ParserOutput]):
         session_id = get_session_id() or "unknown"
         start_time = time.perf_counter()
         
+        # Determine mode
+        mode = "sandbox" if (self._sandbox_manager and self._session_id) else "local"
+        
         log_with_data(logger, 20, "Starting code parsing", {
             "session_id": session_id,
             "total_files": len(files),
             "languages": list(set(self._detect_language(f.path) for f in files)),
+            "mode": mode,
         })
+        
+        # Pre-fetch file contents if using sandbox
+        if mode == "sandbox":
+            files = await self._prefetch_file_contents(files)
         
         # Process files concurrently
         tasks = [self._parse_file(file_info) for file_info in files]
@@ -161,9 +189,56 @@ class ParserAgent(BaseAgent[ParserOutput]):
             "symbols_extracted": len(output.symbols),
             "hotspots_found": len(output.hotspots),
             "duration_ms": round(duration_ms, 2),
+            "mode": mode,
         })
         
         return output
+    
+    async def _prefetch_file_contents(self, files: List[FileInfo]) -> List[FileInfo]:
+        """
+        Pre-fetch file contents from sandbox.
+        
+        This populates the content field of FileInfo objects that don't have it,
+        reading from the sandbox in parallel.
+        
+        Args:
+            files: List of FileInfo objects
+            
+        Returns:
+            Updated list of FileInfo objects with content populated
+        """
+        if not self._sandbox_manager or not self._session_id:
+            return files
+        
+        updated_files = []
+        
+        for file_info in files:
+            if file_info.content:
+                updated_files.append(file_info)
+                continue
+            
+            try:
+                content = await self._sandbox_manager.read_file(
+                    self._session_id,
+                    file_info.path
+                )
+                # Create new FileInfo with content
+                updated_files.append(FileInfo(
+                    path=file_info.path,
+                    content=content,
+                    language=file_info.language,
+                    diff=file_info.diff,
+                    is_new=file_info.is_new,
+                    is_deleted=file_info.is_deleted,
+                    is_modified=file_info.is_modified,
+                    start_line=file_info.start_line,
+                    end_line=file_info.end_line,
+                ))
+            except Exception as e:
+                logger.warning(f"Failed to prefetch {file_info.path}: {e}")
+                updated_files.append(file_info)
+        
+        return updated_files
     
     async def _parse_file(self, file_info: FileInfo) -> tuple:
         """
@@ -254,7 +329,42 @@ class ParserAgent(BaseAgent[ParserOutput]):
         if file_info.content:
             return file_info.content
         
-        # Try to read from disk if path exists
+        # Try to read from disk if path exists (local mode)
+        if os.path.exists(file_info.path):
+            with open(file_info.path, 'r', encoding='utf-8', errors='replace') as f:
+                return f.read()
+        
+        return None
+    
+    async def _get_source_code_async(self, file_info: FileInfo) -> Optional[str]:
+        """
+        Get source code from FileInfo, with sandbox support.
+        
+        Args:
+            file_info: FileInfo object
+            
+        Returns:
+            Source code as string, or None if unavailable
+        """
+        # First check if content is already provided
+        if file_info.content:
+            return file_info.content
+        
+        # Try sandbox if available
+        if self._sandbox_manager and self._session_id:
+            try:
+                content = await self._sandbox_manager.read_file(
+                    self._session_id, 
+                    file_info.path
+                )
+                return content
+            except Exception as e:
+                logger.warning(
+                    f"Failed to read from sandbox: {file_info.path}: {e}"
+                )
+                # Fall through to local filesystem
+        
+        # Try local filesystem
         if os.path.exists(file_info.path):
             with open(file_info.path, 'r', encoding='utf-8', errors='replace') as f:
                 return f.read()

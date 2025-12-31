@@ -5,8 +5,11 @@ import shutil
 import tempfile
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from langchain_core.tools import tool
+
+if TYPE_CHECKING:
+    from agent.services.sandbox_manager import SandboxManager
 
 logger = logging.getLogger(__name__)
 
@@ -261,3 +264,169 @@ def get_changed_files_from_diff(repo_path: str, base_branch: str = "main") -> li
     except Exception as e:
         logger.error(f"Failed to get changed files: {e}")
         return []
+
+
+# =============================================================================
+# E2B Sandbox-based Repository Operations
+# =============================================================================
+
+async def clone_repo_in_sandbox(
+    sandbox_manager: "SandboxManager",
+    session_id: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    depth: int = 1,
+) -> str:
+    """
+    Clone a repository inside E2B sandbox.
+    
+    This is the preferred method for cloning repositories as it provides
+    isolation and doesn't use local filesystem resources.
+    
+    Args:
+        sandbox_manager: The sandbox manager instance
+        session_id: Current session ID
+        owner: Repository owner
+        repo: Repository name
+        branch: Branch to clone
+        depth: Clone depth (default: 1 for shallow clone)
+        
+    Returns:
+        Path to cloned repository inside sandbox
+        
+    Raises:
+        SandboxOperationError: If cloning fails
+    """
+    clone_url = f"https://github.com/{owner}/{repo}.git"
+    directory_name = f"{owner}-{repo}"
+    
+    logger.info(f"Cloning {owner}/{repo} (branch: {branch}) in sandbox for session {session_id}")
+    
+    return await sandbox_manager.clone_repo(
+        session_id=session_id,
+        repo_url=clone_url,
+        branch=branch,
+        depth=depth,
+        directory_name=directory_name,
+    )
+
+
+async def clone_repo_for_pr_sandbox(
+    sandbox_manager: "SandboxManager",
+    session_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    branch: str,
+    installation_id: Optional[int] = None,
+) -> str:
+    """
+    Clone a repository for PR review using E2B sandbox.
+    
+    This replaces the local clone_repo_for_pr function when sandbox is available.
+    
+    Args:
+        sandbox_manager: The sandbox manager instance
+        session_id: Current session ID
+        owner: Repository owner
+        repo: Repository name
+        pr_number: Pull request number (for logging/tracking)
+        branch: Branch to clone
+        installation_id: GitHub App installation ID (for future auth support)
+        
+    Returns:
+        Path to cloned repository inside sandbox
+    """
+    logger.info(f"Cloning {owner}/{repo} PR #{pr_number} (branch: {branch}) in sandbox")
+    
+    # TODO: For private repos, we'll need to handle authentication
+    # This could involve:
+    # 1. Getting an installation access token
+    # 2. Passing it to sandbox via environment variable
+    # 3. Using authenticated URL: https://x-access-token:{token}@github.com/{owner}/{repo}.git
+    
+    return await clone_repo_in_sandbox(
+        sandbox_manager=sandbox_manager,
+        session_id=session_id,
+        owner=owner,
+        repo=repo,
+        branch=branch,
+    )
+
+
+async def get_changed_files_in_sandbox(
+    sandbox_manager: "SandboxManager",
+    session_id: str,
+    repo_path: str,
+    base_branch: str = "main",
+) -> list[str]:
+    """
+    Get list of changed files in sandbox repository.
+    
+    Args:
+        sandbox_manager: The sandbox manager instance
+        session_id: Current session ID
+        repo_path: Path to repository inside sandbox
+        base_branch: Base branch to compare against
+        
+    Returns:
+        List of changed file paths (relative to repo root)
+    """
+    try:
+        # First, fetch the base branch for comparison
+        fetch_result = await sandbox_manager.run_command(
+            session_id,
+            f"cd {repo_path} && git fetch origin {base_branch} --depth=1",
+            timeout=60
+        )
+        
+        if fetch_result.get("exit_code") != 0:
+            logger.warning(f"Failed to fetch base branch: {fetch_result.get('stderr')}")
+            # Continue anyway, might work if we have enough history
+        
+        # Get the diff
+        result = await sandbox_manager.run_command(
+            session_id,
+            f"cd {repo_path} && git diff --name-only origin/{base_branch}...HEAD",
+            timeout=30
+        )
+        
+        if result.get("exit_code") != 0:
+            logger.warning(f"Failed to get diff: {result.get('stderr')}")
+            return []
+        
+        stdout = result.get("stdout", "")
+        files = [f.strip() for f in stdout.strip().split("\n") if f.strip()]
+        
+        logger.info(f"Found {len(files)} changed files in {repo_path}")
+        return files
+        
+    except Exception as e:
+        logger.error(f"Failed to get changed files in sandbox: {e}")
+        return []
+
+
+async def get_file_content_from_sandbox(
+    sandbox_manager: "SandboxManager",
+    session_id: str,
+    file_path: str,
+) -> Optional[str]:
+    """
+    Read file content from sandbox.
+    
+    Convenience wrapper for sandbox_manager.read_file().
+    
+    Args:
+        sandbox_manager: The sandbox manager instance
+        session_id: Current session ID
+        file_path: Path to file inside sandbox
+        
+    Returns:
+        File content or None if read fails
+    """
+    try:
+        return await sandbox_manager.read_file(session_id, file_path)
+    except Exception as e:
+        logger.error(f"Failed to read file {file_path} from sandbox: {e}")
+        return None

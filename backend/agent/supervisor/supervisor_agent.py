@@ -6,11 +6,13 @@ Implements a LangGraph state machine with:
 - Checkpointing for restart capability (database + memory)
 - Async agent execution
 - Knowledge Base integration
+- E2B Sandbox management for isolated code analysis
 - Comprehensive production logging
 
 The Supervisor:
 - Owns global context
 - Has exclusive access to Knowledge Base
+- Manages E2B sandbox lifecycle
 - Decides which sub-agents to invoke
 - Aggregates results into single structured output
 """
@@ -47,6 +49,13 @@ from ..subagents.review_agent import CodeReviewAgent, MockCodeReviewAgent
 from ..subagents.unit_test_agent import UnitTestAgent, MockUnitTestAgent
 from ..llm_factory import LLMFactory, LLMProvider
 from ..services.kb_client import KBClient, KBClientConfig
+from ..services.sandbox_manager import (
+    SandboxManager, 
+    SandboxConfig, 
+    create_sandbox_manager,
+    SandboxError,
+    SandboxCreationError,
+)
 from .intent_parser import IntentParser
 from .result_aggregator import ResultAggregator
 
@@ -83,6 +92,11 @@ class SupervisorConfig:
     kb_enabled: bool = True
     kb_elasticsearch_url: Optional[str] = None
     
+    # E2B Sandbox settings
+    sandbox_enabled: bool = True  # Use E2B sandbox for isolation
+    sandbox_timeout_ms: int = 300_000  # 5 minutes
+    sandbox_template_id: Optional[str] = None  # Custom template or use default
+    
     # Execution settings
     timeout_seconds: float = 600.0  # 10 minutes total
     max_retries: int = 3
@@ -106,6 +120,10 @@ class SupervisorState(TypedDict, total=False):
     
     # Knowledge Base context
     kb_context: Dict[str, Any]  # Serialized KBContext
+    
+    # Sandbox state
+    sandbox_repo_path: str  # Path to cloned repo inside sandbox
+    sandbox_active: bool    # Whether sandbox is active
     
     # Agent outputs
     parser_output: Dict[str, Any]
@@ -138,6 +156,7 @@ class SupervisorAgent:
     - Async execution of sub-agents
     - Checkpointing for restart capability
     - Knowledge Base integration
+    - E2B Sandbox management for isolated code analysis
     - Graceful error handling
     """
     
@@ -161,6 +180,22 @@ class SupervisorAgent:
         )
         self._kb_client = KBClient(kb_config)
         
+        # Initialize sandbox manager (if enabled)
+        self._sandbox_manager: Optional[SandboxManager] = None
+        if self.config.sandbox_enabled:
+            try:
+                sandbox_config = SandboxConfig(
+                    api_key=os.getenv("E2B_API_KEY"),
+                    timeout_ms=self.config.sandbox_timeout_ms,
+                    template_id=self.config.sandbox_template_id or os.getenv("E2B_TEMPLATE_ID"),
+                    max_retries=self.config.max_retries,
+                )
+                self._sandbox_manager = SandboxManager(sandbox_config)
+                logger.info("SandboxManager initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize SandboxManager: {e}. Running without sandbox.")
+                self._sandbox_manager = None
+        
         # Initialize sub-agents (lazy loaded)
         self._parser_agent: Optional[ParserAgent] = None
         self._review_agent: Optional[CodeReviewAgent] = None
@@ -177,8 +212,20 @@ class SupervisorAgent:
     def parser_agent(self) -> ParserAgent:
         """Lazy-load parser agent."""
         if self._parser_agent is None:
+            # Note: sandbox_manager and session_id are set per-run via run_with_sandbox
             self._parser_agent = ParserAgent()
         return self._parser_agent
+    
+    def _get_parser_agent_for_session(self, session_id: str) -> ParserAgent:
+        """
+        Get parser agent configured for the current session.
+        
+        This creates a new ParserAgent with sandbox_manager and session_id set.
+        """
+        return ParserAgent(
+            sandbox_manager=self._sandbox_manager,
+            session_id=session_id,
+        )
     
     @property
     def review_agent(self) -> CodeReviewAgent:
@@ -221,15 +268,18 @@ class SupervisorAgent:
         
         # Add nodes for each step
         graph.add_node("parse_intent", self._node_parse_intent)
+        graph.add_node("setup_sandbox", self._node_setup_sandbox)
         graph.add_node("fetch_kb", self._node_fetch_kb)
         graph.add_node("run_parser", self._node_run_parser)
         graph.add_node("run_review", self._node_run_review)
         graph.add_node("run_tests", self._node_run_tests)
         graph.add_node("aggregate", self._node_aggregate)
+        graph.add_node("cleanup_sandbox", self._node_cleanup_sandbox)
         
         # Define edges
         graph.set_entry_point("parse_intent")
-        graph.add_edge("parse_intent", "fetch_kb")
+        graph.add_edge("parse_intent", "setup_sandbox")
+        graph.add_edge("setup_sandbox", "fetch_kb")
         graph.add_edge("fetch_kb", "run_parser")
         
         # Conditional edge from parser to review or tests
@@ -256,8 +306,11 @@ class SupervisorAgent:
         # Tests always go to aggregate
         graph.add_edge("run_tests", "aggregate")
         
-        # Aggregate ends the workflow
-        graph.add_edge("aggregate", END)
+        # Aggregate goes to cleanup
+        graph.add_edge("aggregate", "cleanup_sandbox")
+        
+        # Cleanup ends the workflow
+        graph.add_edge("cleanup_sandbox", END)
         
         return graph
     
@@ -320,6 +373,131 @@ class SupervisorAgent:
             "completed_steps": state.get("completed_steps", []) + ["parse_intent"],
         }
     
+    async def _node_setup_sandbox(self, state: SupervisorState) -> Dict[str, Any]:
+        """
+        Setup E2B sandbox and clone repository.
+        
+        Creates an isolated cloud sandbox environment for code analysis.
+        Clones the repository inside the sandbox.
+        """
+        start_time = time.perf_counter()
+        session_id = state.get("session_id", "unknown")
+        request_dict = state.get("request", {})
+        
+        log_with_data(logger, 20, "Setting up E2B sandbox", {
+            "step": "setup_sandbox",
+            "sandbox_enabled": self.config.sandbox_enabled,
+            "session_id": session_id,
+        })
+        
+        sandbox_repo_path = None
+        sandbox_active = False
+        errors = state.get("errors", [])
+        
+        if self._sandbox_manager and self.config.sandbox_enabled:
+            try:
+                # Create sandbox for this session
+                await self._sandbox_manager.create_sandbox(
+                    session_id=session_id,
+                    metadata={"pr_number": str(request_dict.get("pr_number", ""))}
+                )
+                
+                # Clone repository if URL is provided
+                repo_url = request_dict.get("repo_url")
+                branch = request_dict.get("branch", "main")
+                
+                if repo_url:
+                    sandbox_repo_path = await self._sandbox_manager.clone_repo(
+                        session_id=session_id,
+                        repo_url=repo_url,
+                        branch=branch,
+                    )
+                    sandbox_active = True
+                    
+                    log_with_data(logger, 20, "Sandbox setup complete", {
+                        "step": "setup_sandbox",
+                        "repo_path": sandbox_repo_path,
+                        "session_id": session_id,
+                    })
+                else:
+                    # No repo URL - sandbox created but no clone
+                    sandbox_active = True
+                    log_with_data(logger, 20, "Sandbox created (no repo to clone)", {
+                        "step": "setup_sandbox",
+                        "session_id": session_id,
+                    })
+                    
+            except SandboxCreationError as e:
+                log_with_data(logger, 40, f"Sandbox creation failed: {e}", {
+                    "step": "setup_sandbox",
+                    "error": str(e),
+                })
+                errors.append(f"Sandbox creation failed: {str(e)}")
+                
+            except SandboxError as e:
+                log_with_data(logger, 40, f"Sandbox operation failed: {e}", {
+                    "step": "setup_sandbox",
+                    "error": str(e),
+                })
+                errors.append(f"Sandbox operation failed: {str(e)}")
+                
+            except Exception as e:
+                log_with_data(logger, 40, f"Unexpected sandbox error: {e}", {
+                    "step": "setup_sandbox",
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                })
+                errors.append(f"Sandbox error: {str(e)}")
+        else:
+            log_with_data(logger, 20, "Sandbox disabled, skipping setup", {
+                "step": "setup_sandbox",
+            })
+        
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log_checkpoint_saved(logger, session_id, "setup_sandbox")
+        
+        return {
+            "sandbox_repo_path": sandbox_repo_path or "",
+            "sandbox_active": sandbox_active,
+            "current_step": "sandbox_ready",
+            "completed_steps": state.get("completed_steps", []) + ["setup_sandbox"],
+            "errors": errors,
+        }
+    
+    async def _node_cleanup_sandbox(self, state: SupervisorState) -> Dict[str, Any]:
+        """
+        Cleanup E2B sandbox after workflow completion.
+        
+        Kills the sandbox to free resources and prevent charges.
+        """
+        session_id = state.get("session_id", "unknown")
+        sandbox_active = state.get("sandbox_active", False)
+        
+        log_with_data(logger, 20, "Cleaning up sandbox", {
+            "step": "cleanup_sandbox",
+            "sandbox_active": sandbox_active,
+            "session_id": session_id,
+        })
+        
+        if self._sandbox_manager and sandbox_active:
+            try:
+                await self._sandbox_manager.kill_sandbox(session_id)
+                log_with_data(logger, 20, "Sandbox cleanup complete", {
+                    "step": "cleanup_sandbox",
+                    "session_id": session_id,
+                })
+            except Exception as e:
+                log_with_data(logger, 30, f"Sandbox cleanup error (non-fatal): {e}", {
+                    "step": "cleanup_sandbox",
+                    "error": str(e),
+                })
+        
+        return {
+            "sandbox_active": False,
+            "current_step": "cleanup_complete",
+            "completed_steps": state.get("completed_steps", []) + ["cleanup_sandbox"],
+        }
+
     async def _node_fetch_kb(self, state: SupervisorState) -> Dict[str, Any]:
         """Fetch Knowledge Base context."""
         start_time = time.perf_counter()
@@ -369,14 +547,28 @@ class SupervisorAgent:
         """Run the Parser Agent."""
         start_time = time.perf_counter()
         session_id = state.get("session_id", "unknown")
+        sandbox_active = state.get("sandbox_active", False)
+        sandbox_repo_path = state.get("sandbox_repo_path", "")
         
         request_dict = state.get("request", {})
         files = [FileInfo.from_dict(f) for f in request_dict.get("files", [])]
         
-        log_agent_start(logger, "ParserAgent", len(files), 
-                       languages=list(set(f.language for f in files if f.language)))
+        # Update file paths to sandbox paths if sandbox is active
+        if sandbox_active and sandbox_repo_path:
+            files = self._update_file_paths_for_sandbox(files, sandbox_repo_path)
         
-        result = await self.parser_agent.run(files)
+        mode = "sandbox" if sandbox_active else "local"
+        log_agent_start(logger, "ParserAgent", len(files), 
+                       languages=list(set(f.language for f in files if f.language)),
+                       mode=mode)
+        
+        # Use sandbox-enabled parser if sandbox is active
+        if sandbox_active and self._sandbox_manager:
+            parser = self._get_parser_agent_for_session(session_id)
+        else:
+            parser = self.parser_agent
+        
+        result = await parser.run(files)
         
         duration_ms = (time.perf_counter() - start_time) * 1000
         output_dict = result.output.to_dict() if result.output else {}
@@ -390,6 +582,7 @@ class SupervisorAgent:
             "files_parsed": len(files),
             "symbols_found": symbols_count,
             "hotspots_identified": hotspots_count,
+            "mode": mode,
         })
         
         log_checkpoint_saved(logger, session_id, "run_parser")
@@ -400,6 +593,50 @@ class SupervisorAgent:
             "current_step": "parser_complete",
             "completed_steps": state.get("completed_steps", []) + ["run_parser"],
         }
+    
+    def _update_file_paths_for_sandbox(
+        self, 
+        files: List[FileInfo], 
+        sandbox_repo_path: str
+    ) -> List[FileInfo]:
+        """
+        Update file paths to point to sandbox locations.
+        
+        Converts relative paths (e.g., 'src/main.py') to sandbox absolute paths
+        (e.g., '/home/user/repos/owner-repo/src/main.py').
+        
+        Args:
+            files: List of FileInfo objects
+            sandbox_repo_path: Path to cloned repo inside sandbox
+            
+        Returns:
+            Updated list of FileInfo objects with sandbox paths
+        """
+        updated_files = []
+        
+        for file_info in files:
+            # If path is already absolute and in sandbox, keep it
+            if file_info.path.startswith("/home/user/repos"):
+                updated_files.append(file_info)
+                continue
+            
+            # Convert relative path to sandbox path
+            rel_path = file_info.path.lstrip("/")
+            sandbox_path = f"{sandbox_repo_path}/{rel_path}"
+            
+            updated_files.append(FileInfo(
+                path=sandbox_path,
+                content=file_info.content,
+                diff=file_info.diff,
+                language=file_info.language,
+                is_new=file_info.is_new,
+                is_deleted=file_info.is_deleted,
+                is_modified=file_info.is_modified,
+                start_line=file_info.start_line,
+                end_line=file_info.end_line,
+            ))
+        
+        return updated_files
     
     async def _node_run_review(self, state: SupervisorState) -> Dict[str, Any]:
         """Run the Code Review Agent."""

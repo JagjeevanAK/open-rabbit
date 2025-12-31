@@ -33,6 +33,27 @@ from .parserReports import (
     ParserReportsReader
 )
 
+from .sandbox_file import (
+    sandbox_read_file,
+    sandbox_read_file_raw,
+    sandbox_read_file_with_line_numbers,
+    sandbox_list_files,
+    sandbox_list_files_raw,
+    sandbox_write_file,
+    sandbox_file_exists,
+    sandbox_get_file_info,
+    sandbox_find_test_framework,
+    SandboxFileOperations,
+)
+
+from .smart_file_reader import (
+    SmartFileReader,
+    SmartReadResult,
+    smart_read_content,
+    read_content_for_review,
+    read_files_from_sandbox,
+)
+
 __all__ = [
     # File tools
     "file_reader_tool",
@@ -55,5 +76,22 @@ __all__ = [
     "read_parser_reports",
     "get_parser_report_summary",
     "check_specific_issue_in_reports",
-    "ParserReportsReader"
+    "ParserReportsReader",
+    # Sandbox file tools
+    "sandbox_read_file",
+    "sandbox_read_file_raw",
+    "sandbox_read_file_with_line_numbers",
+    "sandbox_list_files",
+    "sandbox_list_files_raw",
+    "sandbox_write_file",
+    "sandbox_file_exists",
+    "sandbox_get_file_info",
+    "sandbox_find_test_framework",
+    "SandboxFileOperations",
+    # Smart file reader
+    "SmartFileReader",
+    "SmartReadResult",
+    "smart_read_content",
+    "read_content_for_review",
+    "read_files_from_sandbox",
 ]

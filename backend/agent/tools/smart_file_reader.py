@@ -8,13 +8,20 @@ Key features:
 - Context windows around changed lines
 - Adaptive reading based on file size
 - Support for reading specific line ranges
+- Sandbox support for E2B cloud environments
 """
 
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple, Set
+from typing import Optional, List, Dict, Any, Tuple, Set, TYPE_CHECKING
 from dataclasses import dataclass, field
 
 from agent.tools.token_utils import TokenCounter, count_tokens
+
+if TYPE_CHECKING:
+    from agent.services.sandbox_manager import SandboxManager
+
+if TYPE_CHECKING:
+    from agent.services.sandbox_manager import SandboxManager
 
 
 @dataclass
@@ -493,6 +500,266 @@ class SmartFileReader:
         
         ranges.append(LineRange(start=start, end=end))
         return ranges
+    
+    # =========================================================================
+    # Sandbox Support Methods
+    # =========================================================================
+    
+    def read_content_with_line_numbers(
+        self,
+        content: str,
+        file_path: str,
+        start_line: int = 1,
+        end_line: Optional[int] = None,
+    ) -> Tuple[str, int]:
+        """
+        Format content string with line numbers.
+        
+        This method works with content that's already been read (e.g., from sandbox).
+        
+        Args:
+            content: Raw file content as string
+            file_path: Path to file (for metadata)
+            start_line: Starting line (1-indexed)
+            end_line: Ending line (1-indexed, None for end of file)
+            
+        Returns:
+            Tuple of (formatted content, total lines in content)
+        """
+        lines = content.splitlines()
+        total_lines = len(lines)
+        
+        # Adjust indices
+        start_idx = max(0, start_line - 1)
+        end_idx = total_lines if end_line is None else min(end_line, total_lines)
+        
+        # Format with line numbers
+        formatted_lines = []
+        max_line_num = end_idx
+        line_num_width = len(str(max_line_num))
+        
+        for i in range(start_idx, end_idx):
+            line_num = i + 1
+            formatted_lines.append(f"{line_num:>{line_num_width}} | {lines[i]}")
+        
+        return "\n".join(formatted_lines), total_lines
+    
+    def read_from_content(
+        self,
+        content: str,
+        file_path: str,
+        max_tokens: Optional[int] = None,
+    ) -> SmartReadResult:
+        """
+        Create SmartReadResult from content string.
+        
+        This method is for content that's already been read (e.g., from sandbox).
+        
+        Args:
+            content: Raw file content as string
+            file_path: Path to file (for metadata)
+            max_tokens: Maximum tokens (uses instance default if None)
+            
+        Returns:
+            SmartReadResult with file content
+        """
+        max_tokens = max_tokens or self.max_tokens_per_file
+        result = SmartReadResult(file_path=file_path)
+        
+        try:
+            formatted_content, total_lines = self.read_content_with_line_numbers(
+                content, file_path
+            )
+            result.total_lines = total_lines
+            
+            token_count = self.counter.count_tokens(formatted_content)
+            result.total_tokens = token_count
+            
+            if token_count <= max_tokens:
+                result.is_complete = True
+                result.strategy_used = "full"
+                result.chunks.append(FileChunk(
+                    file_path=file_path,
+                    start_line=1,
+                    end_line=total_lines,
+                    content=formatted_content,
+                    total_lines=total_lines,
+                    token_count=token_count,
+                    is_complete=True,
+                    context_type="full"
+                ))
+            else:
+                # Truncate to fit
+                truncated, actual_tokens = self.counter.truncate_to_tokens(
+                    formatted_content, max_tokens
+                )
+                result.is_complete = False
+                result.strategy_used = "truncated"
+                result.total_tokens = actual_tokens
+                
+                # Estimate how many lines we got
+                estimated_lines = int(total_lines * (actual_tokens / token_count))
+                
+                result.chunks.append(FileChunk(
+                    file_path=file_path,
+                    start_line=1,
+                    end_line=estimated_lines,
+                    content=truncated,
+                    total_lines=total_lines,
+                    token_count=actual_tokens,
+                    is_complete=False,
+                    context_type="truncated"
+                ))
+            
+        except Exception as e:
+            result.error = str(e)
+            result.strategy_used = "error"
+        
+        return result
+    
+    def read_content_with_changed_lines(
+        self,
+        content: str,
+        file_path: str,
+        changed_lines: List[int],
+        max_tokens: Optional[int] = None,
+    ) -> SmartReadResult:
+        """
+        Read content focusing on changed lines with context.
+        
+        Args:
+            content: Raw file content as string
+            file_path: Path to file
+            changed_lines: List of line numbers that were changed
+            max_tokens: Maximum tokens to use
+            
+        Returns:
+            SmartReadResult focused on changes
+        """
+        if not changed_lines:
+            return self.read_from_content(content, file_path, max_tokens)
+        
+        max_tokens = max_tokens or self.max_tokens_per_file
+        result = SmartReadResult(file_path=file_path)
+        
+        try:
+            lines = content.splitlines()
+            result.total_lines = len(lines)
+            
+            # Convert changed lines to ranges and expand with context
+            ranges = self._lines_to_ranges(changed_lines)
+            ranges = [r.expand(self.context_lines) for r in ranges]
+            
+            # Merge overlapping ranges
+            ranges = self._merge_ranges(ranges, result.total_lines)
+            
+            # Calculate line number width for formatting
+            max_line = max(r.end for r in ranges) if ranges else 1
+            line_num_width = len(str(max_line))
+            
+            total_tokens_used = 0
+            
+            for range_obj in ranges:
+                if total_tokens_used >= max_tokens:
+                    break
+                
+                # Extract lines for this range
+                start_idx = max(0, range_obj.start - 1)
+                end_idx = min(range_obj.end, len(lines))
+                
+                formatted_lines = []
+                for i in range(start_idx, end_idx):
+                    line_num = i + 1
+                    formatted_lines.append(f"{line_num:>{line_num_width}} | {lines[i]}")
+                
+                chunk_content = "\n".join(formatted_lines)
+                chunk_tokens = self.counter.count_tokens(chunk_content)
+                
+                # Check if we need to truncate
+                remaining_tokens = max_tokens - total_tokens_used
+                if chunk_tokens > remaining_tokens:
+                    chunk_content, chunk_tokens = self.counter.truncate_to_tokens(
+                        chunk_content, remaining_tokens
+                    )
+                
+                result.chunks.append(FileChunk(
+                    file_path=file_path,
+                    start_line=range_obj.start,
+                    end_line=range_obj.end,
+                    content=chunk_content,
+                    total_lines=result.total_lines,
+                    token_count=chunk_tokens,
+                    is_complete=chunk_tokens == self.counter.count_tokens("\n".join(formatted_lines)),
+                    context_type="context"
+                ))
+                
+                total_tokens_used += chunk_tokens
+            
+            result.total_tokens = total_tokens_used
+            result.is_complete = all(c.is_complete for c in result.chunks)
+            result.strategy_used = "ranges_with_context"
+            
+        except Exception as e:
+            result.error = str(e)
+            result.strategy_used = "error"
+        
+        return result
+    
+    def smart_read_content(
+        self,
+        content: str,
+        file_path: str,
+        changed_lines: Optional[List[int]] = None,
+        max_tokens: Optional[int] = None,
+    ) -> SmartReadResult:
+        """
+        Intelligently read content based on size and changes.
+        
+        This is the sandbox-compatible version of smart_read().
+        
+        Strategy:
+        1. If content is small (<2000 tokens), read fully
+        2. If changed_lines provided, focus on those with context
+        3. Otherwise, read as much as token budget allows
+        
+        Args:
+            content: Raw file content as string
+            file_path: Path to file
+            changed_lines: Optional list of changed line numbers
+            max_tokens: Maximum tokens to use
+            
+        Returns:
+            SmartReadResult with appropriate content
+        """
+        max_tokens = max_tokens or self.max_tokens_per_file
+        
+        try:
+            # Estimate tokens
+            estimated_tokens = len(content) // 3  # Rough estimate
+            
+            # Small content - read fully
+            if estimated_tokens < self.SMALL_FILE_TOKENS:
+                return self.read_from_content(content, file_path, max_tokens)
+            
+            # Have changed lines - focus on those
+            if changed_lines:
+                return self.read_content_with_changed_lines(
+                    content, file_path, changed_lines, max_tokens
+                )
+            
+            # Medium content without changes - try to read fully
+            if estimated_tokens < self.MEDIUM_FILE_TOKENS:
+                return self.read_from_content(content, file_path, max_tokens)
+            
+            # Large content - read start with truncation
+            return self.read_from_content(content, file_path, max_tokens)
+            
+        except Exception as e:
+            return SmartReadResult(
+                file_path=file_path,
+                error=str(e),
+                strategy_used="error"
+            )
 
 
 def parse_diff_for_changed_lines(diff_content: str) -> Dict[str, List[int]]:
@@ -604,5 +871,130 @@ def read_files_for_review(
         if file_path:
             result = reader.smart_read(file_path, changed_lines)
             results.append(result)
+    
+    return results
+
+
+# =========================================================================
+# Sandbox-Compatible Convenience Functions
+# =========================================================================
+
+def smart_read_content(
+    content: str,
+    file_path: str,
+    changed_lines: Optional[List[int]] = None,
+    max_tokens: int = 8000,
+    model: str = "gpt-4o"
+) -> SmartReadResult:
+    """
+    Convenience function for smart reading from content string (sandbox-compatible).
+    
+    Args:
+        content: Raw file content as string
+        file_path: Path to file (for metadata)
+        changed_lines: Optional list of changed line numbers
+        max_tokens: Maximum tokens to use
+        model: Model for token counting
+        
+    Returns:
+        SmartReadResult
+    """
+    reader = SmartFileReader(model=model, max_tokens_per_file=max_tokens)
+    return reader.smart_read_content(content, file_path, changed_lines)
+
+
+def read_content_for_review(
+    files_with_content: List[Dict[str, Any]],
+    max_total_tokens: int = 50000,
+    model: str = "gpt-4o"
+) -> List[SmartReadResult]:
+    """
+    Read multiple files from content for code review (sandbox-compatible).
+    
+    Args:
+        files_with_content: List of dicts with 'path', 'content', and optional 'changed_lines'
+        max_total_tokens: Total token budget for all files
+        model: Model for token counting
+        
+    Returns:
+        List of SmartReadResult objects
+    """
+    if not files_with_content:
+        return []
+    
+    # Distribute tokens evenly with minimum per file
+    min_tokens_per_file = 1000
+    tokens_per_file = max(min_tokens_per_file, max_total_tokens // len(files_with_content))
+    
+    reader = SmartFileReader(model=model, max_tokens_per_file=tokens_per_file)
+    results = []
+    
+    for file_info in files_with_content:
+        file_path = file_info.get("path") or file_info.get("file_path")
+        content = file_info.get("content")
+        changed_lines = file_info.get("changed_lines")
+        
+        if file_path and content is not None:
+            result = reader.smart_read_content(content, file_path, changed_lines)
+            results.append(result)
+        elif file_path:
+            # No content provided, try to read from filesystem
+            result = reader.smart_read(file_path, changed_lines)
+            results.append(result)
+    
+    return results
+
+
+async def read_files_from_sandbox(
+    sandbox_manager: "SandboxManager",
+    session_id: str,
+    file_paths: List[str],
+    changed_lines_map: Optional[Dict[str, List[int]]] = None,
+    max_total_tokens: int = 50000,
+    model: str = "gpt-4o"
+) -> List[SmartReadResult]:
+    """
+    Read multiple files from E2B sandbox for code review.
+    
+    This is the primary function for sandbox-based file reading.
+    
+    Args:
+        sandbox_manager: The SandboxManager instance
+        session_id: Current session ID
+        file_paths: List of file paths inside sandbox
+        changed_lines_map: Optional dict mapping file paths to changed line numbers
+        max_total_tokens: Total token budget for all files
+        model: Model for token counting
+        
+    Returns:
+        List of SmartReadResult objects
+    """
+    if not file_paths:
+        return []
+    
+    # Distribute tokens evenly with minimum per file
+    min_tokens_per_file = 1000
+    tokens_per_file = max(min_tokens_per_file, max_total_tokens // len(file_paths))
+    
+    reader = SmartFileReader(model=model, max_tokens_per_file=tokens_per_file)
+    results = []
+    changed_lines_map = changed_lines_map or {}
+    
+    for file_path in file_paths:
+        try:
+            # Read content from sandbox
+            content = await sandbox_manager.read_file(session_id, file_path)
+            changed_lines = changed_lines_map.get(file_path)
+            
+            result = reader.smart_read_content(content, file_path, changed_lines)
+            results.append(result)
+            
+        except Exception as e:
+            # Create error result for this file
+            results.append(SmartReadResult(
+                file_path=file_path,
+                error=f"Failed to read from sandbox: {str(e)}",
+                strategy_used="error"
+            ))
     
     return results

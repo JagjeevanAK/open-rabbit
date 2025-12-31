@@ -272,6 +272,72 @@ class AnalysisPipeline:
             print(f"  Variables: {len(self.semantic.find_nodes_by_type('variable'))}")
         
         print("=" * 60)
+    
+    # =========================================================================
+    # Content-based methods (for sandbox support)
+    # =========================================================================
+    
+    def parse_content(
+        self, 
+        content: Union[str, bytes], 
+        file_path: str, 
+        language: Optional[str] = None
+    ) -> Any:
+        """
+        Parse source code content into AST.
+        
+        This method is for content that's already been read (e.g., from sandbox).
+        Language is auto-detected from file_path extension if not provided.
+        
+        Args:
+            content: Source code string or bytes
+            file_path: Original file path (used for language detection and metadata)
+            language: Language override (auto-detects from file_path if None)
+        
+        Returns:
+            AST tree object
+        """
+        # Auto-detect language from file path if not provided
+        if language is None and self.language is None:
+            self.language = self.detect_language_from_file(file_path)
+        elif language is not None:
+            self.language = language
+        
+        assert self.language is not None, "Language must be set"
+        
+        if isinstance(content, str):
+            self.source_code = content.encode('utf-8')
+        else:
+            self.source_code = content
+        
+        self.source_path = Path(file_path)
+        self.ast_tree = parse_code(content, self.language)
+        return self.ast_tree
+    
+    def run_pipeline_on_content(
+        self, 
+        content: Union[str, bytes], 
+        file_path: str,
+        language: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Run the complete pipeline on content: AST -> Semantic
+        
+        This method is for content that's already been read (e.g., from sandbox).
+        Does not write reports to disk.
+        
+        Args:
+            content: Source code string or bytes
+            file_path: Original file path (for language detection and metadata)
+            language: Language override (auto-detects from file_path if None)
+        
+        Returns:
+            Dictionary containing all analysis results
+        """
+        self.parse_content(content, file_path, language)
+        self.build_semantic()
+        self.generate_reports()
+        return self.get_results()
 
 
 def analyze_code(code: str, language: str = "python") -> Dict[str, Any]:
@@ -288,3 +354,32 @@ def analyze_file(file_path: str, language: Optional[str] = None, output_dir: Uni
     
     pipeline = AnalysisPipeline(language)
     return pipeline.run_pipeline_on_file(file_path, output_dir=output_dir)
+
+
+def analyze_content(
+    content: Union[str, bytes], 
+    file_path: str, 
+    language: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Convenience function to analyze content (sandbox-compatible).
+    
+    Args:
+        content: Source code string or bytes
+        file_path: Original file path (for language detection and metadata)
+        language: Language override (auto-detects from file_path if None)
+    
+    Returns:
+        Dictionary with all analysis results
+    """
+    if language is None:
+        ext = Path(file_path).suffix.lower()
+        language = AnalysisPipeline.EXTENSION_MAP.get(ext)
+        if language is None:
+            raise ValueError(
+                f"Unsupported file extension: {ext}. "
+                f"Supported: {', '.join(AnalysisPipeline.EXTENSION_MAP.keys())}"
+            )
+    
+    pipeline = AnalysisPipeline(language)
+    return pipeline.run_pipeline_on_content(content, file_path, language)
