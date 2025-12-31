@@ -20,6 +20,7 @@ interface ReviewRequestBody {
     repo: string;
     pr_number: number;
     branch: string;
+    base_branch: string;
     installation_id: number;
     changed_files: string[];
 }
@@ -79,6 +80,7 @@ export default (app: Probot) => {
                 repo,
                 pr_number: pr.number,
                 branch: pr.head.ref,
+                base_branch: pr.base.ref,  // Pass base branch for diff comparison
                 installation_id: installationId,
                 changed_files: changedFiles,
             };

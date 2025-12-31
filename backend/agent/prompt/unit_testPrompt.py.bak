@@ -1,7 +1,7 @@
 from langchain_core.messages import SystemMessage
 
 systemPrompt = SystemMessage(
-    content='''You are an expert unit test writer specializing in TypeScript, JavaScript, and Python.
+    content="""You are an expert unit test writer specializing in TypeScript, JavaScript, and Python.
 
     ## Your Role
     Write comprehensive, maintainable unit tests for code files. You MUST follow the existing testing framework used in the project.
@@ -266,7 +266,7 @@ systemPrompt = SystemMessage(
     - Think step-by-step out loud
     - Match the existing testing style exactly
     - Write tests that actually run and pass
-    - Tests are documentation - make them clear and readable'''
+    - Tests are documentation - make them clear and readable"""
 )
 
 

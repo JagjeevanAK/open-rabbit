@@ -181,11 +181,13 @@ class ReviewIssue:
             "path": self.file,
             "line": self.line,
             "body": "\n".join(body_parts).strip(),
+            "side": "RIGHT",  # Comment on the new code side (added/modified lines)
         }
         
         # Add multi-line support if end_line is specified
         if self.end_line and self.end_line > self.line:
             comment_data["start_line"] = self.line
+            comment_data["start_side"] = "RIGHT"
             comment_data["line"] = self.end_line
         
         return comment_data

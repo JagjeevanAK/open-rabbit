@@ -229,6 +229,11 @@ class ReviewRequest:
     # Existing repo path (if already cloned)
     repo_path: Optional[str] = None
     
+    # Valid lines for inline comments (from git diff)
+    # Maps file_path -> list of line numbers that are in the PR diff
+    # If set, the review agent will only generate comments on these lines
+    valid_lines: Optional[Dict[str, List[int]]] = None
+    
     # Session/tracking
     session_id: Optional[str] = None
     
@@ -243,6 +248,7 @@ class ReviewRequest:
             "base_branch": self.base_branch,
             "user_request": self.user_request,
             "repo_path": self.repo_path,
+            "valid_lines": self.valid_lines,
             "session_id": self.session_id,
         }
     
@@ -258,6 +264,7 @@ class ReviewRequest:
             base_branch=data.get("base_branch"),
             user_request=data.get("user_request"),
             repo_path=data.get("repo_path"),
+            valid_lines=data.get("valid_lines"),
             session_id=data.get("session_id"),
         )
 

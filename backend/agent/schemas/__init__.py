@@ -38,6 +38,18 @@ from .common import (
     CheckpointData,
 )
 
+from .comment_format import (
+    CommentPriority,
+    RawReviewComment,
+    FormattedInlineComment,
+    DroppedComment,
+    FormatterInput,
+    FormatterOutput,
+    SEVERITY_EMOJI,
+    CATEGORY_EMOJI,
+    SEVERITY_LABEL,
+)
+
 __all__ = [
     # Parser outputs
     "FileMetadata",
@@ -61,4 +73,14 @@ __all__ = [
     "SupervisorOutput",
     "AgentStatus",
     "CheckpointData",
+    # Comment format types
+    "CommentPriority",
+    "RawReviewComment",
+    "FormattedInlineComment",
+    "DroppedComment",
+    "FormatterInput",
+    "FormatterOutput",
+    "SEVERITY_EMOJI",
+    "CATEGORY_EMOJI",
+    "SEVERITY_LABEL",
 ]

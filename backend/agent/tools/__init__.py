@@ -54,6 +54,13 @@ from .smart_file_reader import (
     read_files_from_sandbox,
 )
 
+from .diff_parser import (
+    parse_diff_hunks,
+    parse_unified_diff,
+    get_pr_diff,
+    get_diff_text_per_file,
+)
+
 __all__ = [
     # File tools
     "file_reader_tool",
@@ -94,4 +101,9 @@ __all__ = [
     "smart_read_content",
     "read_content_for_review",
     "read_files_from_sandbox",
+    # Diff parser
+    "parse_diff_hunks",
+    "parse_unified_diff",
+    "get_pr_diff",
+    "get_diff_text_per_file",
 ]

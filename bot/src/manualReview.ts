@@ -91,6 +91,7 @@ export default (app: Probot) => {
                 repo,
                 pr_number: prNumber,
                 branch: pr.head.ref,
+                base_branch: pr.base.ref,  // Pass base branch for diff comparison
                 installation_id: installationId,
                 changed_files: changedFiles,
             }, {

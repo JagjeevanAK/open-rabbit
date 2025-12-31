@@ -1,0 +1,16 @@
+# This is a config for E2B sandbox template.
+# You can use template ID (srqgv8s8ylsmcpnrb6cy) or template name (open-rabbit) to create a sandbox:
+
+# Python SDK
+# from e2b import Sandbox, AsyncSandbox
+# sandbox = Sandbox.create("open-rabbit") # Sync sandbox
+# sandbox = await AsyncSandbox.create("open-rabbit") # Async sandbox
+
+# JS SDK
+# import { Sandbox } from 'e2b'
+# const sandbox = await Sandbox.create('open-rabbit')
+
+team_id = "c25751c5-dae4-4534-a389-44b6b39960c7"
+dockerfile = "e2b.Dockerfile"
+template_name = "open-rabbit"
+template_id = "srqgv8s8ylsmcpnrb6cy"

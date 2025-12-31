@@ -165,23 +165,23 @@ class SandboxManager:
                     f"(attempt {attempt}/{self.config.max_retries})"
                 )
                 
-                # Create sandbox with E2B SDK
-                sandbox_kwargs = {
+                # Build kwargs for Sandbox.create()
+                create_kwargs = {
                     "timeout": timeout // 1000,  # E2B uses seconds
                     "api_key": self._api_key,
                 }
                 
                 if self._template_id:
-                    sandbox_kwargs["template"] = self._template_id
+                    create_kwargs["template"] = self._template_id
                 
                 if metadata:
-                    sandbox_kwargs["metadata"] = metadata
+                    create_kwargs["metadata"] = metadata
                 
-                # E2B Sandbox.create is synchronous, run in executor
+                # E2B Sandbox.create() is the correct way to create a sandbox
                 loop = asyncio.get_event_loop()
                 sandbox = await loop.run_in_executor(
                     None,
-                    lambda: Sandbox(**sandbox_kwargs)
+                    lambda: Sandbox.create(**create_kwargs)
                 )
                 
                 # Track the session
@@ -579,6 +579,372 @@ class SandboxManager:
             error_msg = f"Command execution failed: {e}"
             logger.error(error_msg)
             raise SandboxOperationError(error_msg) from e
+    
+    async def clone_fork_repo(
+        self,
+        session_id: str,
+        fork_owner: str,
+        fork_repo: str,
+        branch: str,
+        base_owner: str,
+        base_repo: str,
+        base_branch: str = "main",
+        depth: int = 1,
+    ) -> str:
+        """
+        Clone a fork repository and set up upstream for diff comparison.
+        
+        This is the primary method for cloning PR repos:
+        - Clones from fork (head) repository
+        - Adds upstream remote pointing to base repository
+        - Fetches base branch from upstream for diff comparison
+        
+        Args:
+            session_id: Session identifier
+            fork_owner: Fork repository owner (PR head owner)
+            fork_repo: Fork repository name (PR head repo)
+            branch: Branch to clone (PR head branch)
+            base_owner: Base repository owner (PR base owner)
+            base_repo: Base repository name (PR base repo)
+            base_branch: Base branch for diff comparison (e.g., "main")
+            depth: Clone depth (default: 1 for shallow clone)
+            
+        Returns:
+            Path to cloned repository inside sandbox
+            
+        Raises:
+            SandboxOperationError: If cloning fails
+        """
+        sandbox = await self.get_sandbox(session_id)
+        session = self._sessions[session_id]
+        session.status = SandboxStatus.CLONING
+        
+        # Build directory name and paths
+        directory_name = f"{fork_owner}-{fork_repo}"
+        clone_path = f"{self.REPOS_DIR}/{directory_name}"
+        fork_url = f"https://github.com/{fork_owner}/{fork_repo}.git"
+        base_url = f"https://github.com/{base_owner}/{base_repo}.git"
+        
+        is_fork = fork_owner != base_owner or fork_repo != base_repo
+        
+        logger.info(
+            f"Cloning {'fork ' if is_fork else ''}{fork_owner}/{fork_repo} "
+            f"(branch: {branch}) for session {session_id}"
+        )
+        
+        try:
+            # Extend timeout for clone operation
+            await self.extend_timeout(session_id, 180_000)  # 3 minutes
+            
+            loop = asyncio.get_event_loop()
+            
+            # Step 1: Clone the fork/head repository
+            clone_cmd = f"git clone --depth {depth} --branch {branch} {fork_url} {clone_path}"
+            
+            result = await loop.run_in_executor(
+                None,
+                lambda: sandbox.commands.run(clone_cmd, timeout=120)
+            )
+            
+            if result.exit_code != 0:
+                error_msg = result.stderr or result.stdout or "Unknown error"
+                raise SandboxOperationError(
+                    f"Git clone failed with exit code {result.exit_code}: {error_msg}"
+                )
+            
+            logger.info(f"Successfully cloned repository to {clone_path}")
+            
+            # Step 2: For fork PRs, add upstream and fetch base branch
+            if is_fork:
+                logger.info(f"Setting up upstream remote: {base_owner}/{base_repo}")
+                
+                # Add upstream remote
+                add_remote_cmd = f"cd {clone_path} && git remote add upstream {base_url}"
+                await loop.run_in_executor(
+                    None,
+                    lambda: sandbox.commands.run(add_remote_cmd, timeout=30)
+                )
+                
+                # Fetch base branch from upstream with enough history for merge-base
+                # Using --unshallow or fetching with more depth to get merge base
+                fetch_cmd = f"cd {clone_path} && git fetch --depth=100 upstream {base_branch}"
+                fetch_result = await loop.run_in_executor(
+                    None,
+                    lambda: sandbox.commands.run(fetch_cmd, timeout=120)
+                )
+                
+                if fetch_result.exit_code == 0:
+                    logger.info(f"Fetched upstream/{base_branch} for diff comparison")
+                else:
+                    logger.warning(
+                        f"Failed to fetch upstream base branch: "
+                        f"{fetch_result.stderr or fetch_result.stdout}"
+                    )
+                
+                # Deepen local history to find merge-base
+                deepen_cmd = f"cd {clone_path} && git fetch --deepen=100 origin {branch}"
+                await loop.run_in_executor(
+                    None,
+                    lambda: sandbox.commands.run(deepen_cmd, timeout=60)
+                )
+            else:
+                # Same-repo PR: just fetch origin base branch if needed
+                fetch_cmd = f"cd {clone_path} && git fetch --depth=1 origin {base_branch}"
+                await loop.run_in_executor(
+                    None,
+                    lambda: sandbox.commands.run(fetch_cmd, timeout=60)
+                )
+            
+            session.repo_path = clone_path
+            session.status = SandboxStatus.READY
+            session.update_activity()
+            
+            return clone_path
+            
+        except SandboxOperationError:
+            session.status = SandboxStatus.ERROR
+            raise
+        except Exception as e:
+            session.status = SandboxStatus.ERROR
+            error_msg = f"Clone fork operation failed: {e}"
+            logger.error(error_msg)
+            raise SandboxOperationError(error_msg) from e
+    
+    async def get_diff(
+        self,
+        session_id: str,
+        base_branch: str = "main",
+        changed_files: Optional[List[str]] = None,
+    ) -> Dict[str, List[int]]:
+        """
+        Get valid line numbers from git diff in sandbox.
+        
+        Tries multiple diff refs to handle both fork and same-repo PRs:
+        1. upstream/{base_branch}...HEAD (for fork PRs)
+        2. origin/{base_branch}...HEAD (for same-repo PRs)
+        3. {base_branch}...HEAD (local branch)
+        
+        Args:
+            session_id: Session identifier
+            base_branch: Base branch for comparison
+            changed_files: Optional list of specific files to diff
+            
+        Returns:
+            Dict mapping filename -> list of valid line numbers
+            
+        Raises:
+            SandboxOperationError: If diff fails
+        """
+        session = self._sessions.get(session_id)
+        if not session or not session.repo_path:
+            raise SandboxOperationError("No repository cloned for this session")
+        
+        repo_path = session.repo_path
+        sandbox = await self.get_sandbox(session_id)
+        loop = asyncio.get_event_loop()
+        
+        # Try multiple diff refs
+        diff_refs = [
+            f"upstream/{base_branch}...HEAD",  # Fork PRs with merge-base
+            f"upstream/{base_branch}..HEAD",   # Fork PRs direct diff (no merge-base)
+            f"origin/{base_branch}...HEAD",    # Same-repo PRs
+            f"origin/{base_branch}..HEAD",     # Same-repo direct diff
+            f"{base_branch}...HEAD",           # Local branch
+        ]
+        
+        diff_output = None
+        used_ref = None
+        
+        for diff_ref in diff_refs:
+            cmd = f"cd {repo_path} && git diff {diff_ref}"
+            
+            if changed_files:
+                files_str = " ".join(f'"{f}"' for f in changed_files)
+                cmd += f" -- {files_str}"
+            
+            logger.debug(f"Trying diff with ref: {diff_ref}")
+            
+            result = await loop.run_in_executor(
+                None,
+                lambda cmd=cmd: sandbox.commands.run(cmd, timeout=60)
+            )
+            
+            if result.exit_code == 0 and result.stdout and result.stdout.strip():
+                diff_output = result.stdout
+                used_ref = diff_ref
+                logger.info(f"Git diff successful with ref: {diff_ref}")
+                break
+        
+        if not diff_output:
+            # Last resort: HEAD~1
+            logger.warning("All diff refs failed, falling back to HEAD~1")
+            cmd = f"cd {repo_path} && git diff HEAD~1"
+            if changed_files:
+                files_str = " ".join(f'"{f}"' for f in changed_files)
+                cmd += f" -- {files_str}"
+            
+            result = await loop.run_in_executor(
+                None,
+                lambda: sandbox.commands.run(cmd, timeout=60)
+            )
+            
+            if result.exit_code != 0 or not result.stdout:
+                logger.error(f"All git diff attempts failed")
+                return {}
+            
+            diff_output = result.stdout
+            used_ref = "HEAD~1"
+        
+        # Parse diff to get valid lines
+        valid_lines = self._parse_diff_output(diff_output)
+        
+        logger.info(
+            f"Parsed diff using {used_ref}: {len(valid_lines)} files, "
+            f"{sum(len(lines) for lines in valid_lines.values())} total valid lines"
+        )
+        
+        return valid_lines
+    
+    async def get_diff_text(
+        self,
+        session_id: str,
+        base_branch: str = "main",
+        changed_files: Optional[List[str]] = None,
+    ) -> Dict[str, str]:
+        """
+        Get raw diff text per file in sandbox.
+        
+        Args:
+            session_id: Session identifier
+            base_branch: Base branch for comparison
+            changed_files: Optional list of specific files to diff
+            
+        Returns:
+            Dict mapping filename -> diff text
+        """
+        session = self._sessions.get(session_id)
+        if not session or not session.repo_path:
+            raise SandboxOperationError("No repository cloned for this session")
+        
+        repo_path = session.repo_path
+        sandbox = await self.get_sandbox(session_id)
+        loop = asyncio.get_event_loop()
+        
+        # Try upstream first, then origin
+        diff_refs = [
+            f"upstream/{base_branch}...HEAD",
+            f"upstream/{base_branch}..HEAD",   # Direct diff without merge-base
+            f"origin/{base_branch}...HEAD",
+            f"origin/{base_branch}..HEAD",     # Direct diff without merge-base
+            "HEAD~1",
+        ]
+        
+        diff_output = None
+        
+        for diff_ref in diff_refs:
+            cmd = f"cd {repo_path} && git diff {diff_ref}"
+            if changed_files:
+                files_str = " ".join(f'"{f}"' for f in changed_files)
+                cmd += f" -- {files_str}"
+            
+            result = await loop.run_in_executor(
+                None,
+                lambda cmd=cmd: sandbox.commands.run(cmd, timeout=60)
+            )
+            
+            if result.exit_code == 0 and result.stdout:
+                diff_output = result.stdout
+                break
+        
+        if not diff_output:
+            return {}
+        
+        # Parse into per-file diffs
+        return self._parse_diff_per_file(diff_output)
+    
+    def _parse_diff_output(self, diff_output: str) -> Dict[str, List[int]]:
+        """Parse git diff output to extract valid line numbers per file."""
+        import re
+        
+        result = {}
+        
+        if not diff_output:
+            return result
+        
+        # Match file headers
+        file_pattern = re.compile(r'^diff --git a/(.+?) b/(.+?)$', re.MULTILINE)
+        hunk_pattern = re.compile(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
+        
+        # Find all file sections
+        matches = list(file_pattern.finditer(diff_output))
+        
+        for i, match in enumerate(matches):
+            filename = match.group(2)  # Use b/ path
+            
+            # Get content for this file
+            start = match.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(diff_output)
+            file_diff = diff_output[start:end]
+            
+            # Parse hunks
+            valid_lines = []
+            current_line = 0
+            in_hunk = False
+            
+            for line in file_diff.split('\n'):
+                # Check for hunk header
+                hunk_match = hunk_pattern.match(line)
+                if hunk_match:
+                    new_start = int(hunk_match.group(1))
+                    current_line = new_start
+                    in_hunk = True
+                    continue
+                
+                if not in_hunk:
+                    continue
+                
+                # Skip metadata
+                if line.startswith('diff ') or line.startswith('index ') or \
+                   line.startswith('--- ') or line.startswith('+++ '):
+                    continue
+                
+                # Process content
+                if line.startswith('-'):
+                    # Deleted line - skip
+                    continue
+                elif line.startswith('+'):
+                    # Added line - valid for comments
+                    valid_lines.append(current_line)
+                    current_line += 1
+                else:
+                    # Context line - also valid
+                    valid_lines.append(current_line)
+                    current_line += 1
+            
+            if valid_lines:
+                result[filename] = valid_lines
+        
+        return result
+    
+    def _parse_diff_per_file(self, diff_output: str) -> Dict[str, str]:
+        """Parse git diff output into per-file diff text."""
+        import re
+        
+        result = {}
+        
+        if not diff_output:
+            return result
+        
+        file_pattern = re.compile(r'^diff --git a/(.+?) b/(.+?)$', re.MULTILINE)
+        matches = list(file_pattern.finditer(diff_output))
+        
+        for i, match in enumerate(matches):
+            filename = match.group(2)
+            start = match.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(diff_output)
+            result[filename] = diff_output[start:end]
+        
+        return result
     
     async def kill_sandbox(self, session_id: str) -> bool:
         """

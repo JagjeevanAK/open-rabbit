@@ -10,10 +10,13 @@ from typing import Optional, List, Dict, Any
 
 class ReviewRequest(BaseModel):
     """Request from bot to trigger code review"""
-    owner: str = Field(..., description="Repository owner")
-    repo: str = Field(..., description="Repository name")
+    owner: str = Field(..., description="Repository owner (base repo)")
+    repo: str = Field(..., description="Repository name (base repo)")
     pr_number: int = Field(..., description="Pull request number")
     branch: str = Field(..., description="Branch to review")
+    base_branch: Optional[str] = Field("main", description="Base branch for diff comparison")
+    head_owner: Optional[str] = Field(None, description="Head repo owner (for fork PRs)")
+    head_repo: Optional[str] = Field(None, description="Head repo name (for fork PRs)")
     changed_files: Optional[List[str]] = Field(None, description="List of changed files")
     installation_id: int = Field(0, description="GitHub App installation ID (0 for test mode)")
     comment_id: Optional[int] = Field(None, description="Comment ID that triggered the review")

@@ -96,7 +96,8 @@ IMPORTANT:
 - Only report real issues, not style preferences
 - Be specific about line numbers
 - Provide actionable suggestions
-- Focus on the most impactful issues first"""
+- Focus on the most impactful issues first
+{valid_lines_instruction}"""
 
 
 class CodeReviewAgent(BaseAgent[ReviewOutput]):
@@ -161,6 +162,7 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
         parsed_metadata: ParserOutput,
         kb_context: KBContext,
         files: List[FileInfo],
+        valid_lines: Optional[Dict[str, List[int]]] = None,
     ) -> ReviewOutput:
         """
         Execute code review on the provided files.
@@ -169,6 +171,8 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
             parsed_metadata: Output from Parser Agent
             kb_context: Knowledge Base context from Supervisor
             files: List of files to review
+            valid_lines: Dict mapping file path -> list of line numbers that are in the diff.
+                         If provided, only comments on these lines will be included.
             
         Returns:
             ReviewOutput with identified issues
@@ -185,11 +189,12 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
             "reviewable_files": len(reviewable_files),
             "languages": list(set(f.language for f in reviewable_files if f.language)),
             "kb_context_size": len(kb_context.coding_style) + len(kb_context.conventions),
+            "has_valid_lines": valid_lines is not None,
         })
         
         # Review each file
         tasks = [
-            self._review_file(file_info, parsed_metadata, kb_context)
+            self._review_file(file_info, parsed_metadata, kb_context, valid_lines)
             for file_info in reviewable_files
         ]
         
@@ -239,16 +244,31 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
         file_info: FileInfo,
         parsed_metadata: ParserOutput,
         kb_context: KBContext,
+        valid_lines: Optional[Dict[str, List[int]]] = None,
     ) -> List[ReviewIssue]:
-        """Review a single file."""
+        """Review a single file.
+        
+        Args:
+            file_info: File information including content
+            parsed_metadata: Parsed code structure
+            kb_context: Knowledge base context
+            valid_lines: Dict mapping file path -> list of valid line numbers for comments.
+                         If provided for this file, LLM will be instructed to only comment on those lines.
+        """
         session_id = get_session_id() or "unknown"
         start_time = time.perf_counter()
+        
+        # Get valid lines for this specific file
+        file_valid_lines = None
+        if valid_lines and file_info.path in valid_lines:
+            file_valid_lines = valid_lines[file_info.path]
         
         log_with_data(logger, 10, f"Reviewing file: {file_info.path}", {
             "session_id": session_id,
             "file": file_info.path,
             "language": file_info.language,
             "content_length": len(file_info.content) if file_info.content else 0,
+            "valid_lines_count": len(file_valid_lines) if file_valid_lines else "all",
         })
         
         try:
@@ -256,10 +276,23 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
             file_parsed = self._build_parsed_context(file_info, parsed_metadata)
             kb_text = kb_context.to_prompt_context()
             
+            # Build valid_lines instruction if we have constraints
+            valid_lines_instruction = ""
+            if file_valid_lines:
+                # Format line ranges for readability
+                line_ranges = self._format_line_ranges(file_valid_lines)
+                valid_lines_instruction = f"""
+## CRITICAL: Valid Lines for Comments
+You can ONLY comment on lines that are part of the PR diff. For this file, you can comment on these lines:
+{line_ranges}
+
+DO NOT comment on any lines outside this list. If you find an issue on a line not in this list, mention it in the suggestion of a nearby valid line instead."""
+            
             # Build the review prompt
             system_prompt_formatted = CODE_REVIEW_SYSTEM_PROMPT.format(
                 kb_context=kb_text,
                 parsed_context=file_parsed,
+                valid_lines_instruction=valid_lines_instruction,
             )
             
             system_message = SystemMessage(content=system_prompt_formatted)
@@ -301,6 +334,22 @@ Identify issues and respond with JSON only.""")
             
             # Parse response
             issues = self._parse_review_response(response.content, file_info.path)
+            
+            # Filter issues to only those on valid lines (safety check even after prompting)
+            if file_valid_lines:
+                original_count = len(issues)
+                issues = [
+                    issue for issue in issues
+                    if issue.line in file_valid_lines
+                ]
+                filtered_count = original_count - len(issues)
+                if filtered_count > 0:
+                    log_with_data(logger, 20, f"Filtered {filtered_count} issues outside valid lines", {
+                        "session_id": session_id,
+                        "file": file_info.path,
+                        "filtered_count": filtered_count,
+                        "remaining_count": len(issues),
+                    })
             
             total_duration_ms = (time.perf_counter() - start_time) * 1000
             
@@ -373,6 +422,39 @@ Identify issues and respond with JSON only.""")
             return f"**Full Content:**\n```{file_info.language or ''}\n{content}\n```"
         else:
             return "No content available for review."
+    
+    def _format_line_ranges(self, lines: List[int]) -> str:
+        """
+        Format a list of line numbers into readable ranges.
+        
+        Example: [1, 2, 3, 5, 6, 10] -> "1-3, 5-6, 10"
+        """
+        if not lines:
+            return "No lines available"
+        
+        sorted_lines = sorted(set(lines))
+        ranges = []
+        start = sorted_lines[0]
+        end = start
+        
+        for line in sorted_lines[1:]:
+            if line == end + 1:
+                end = line
+            else:
+                if start == end:
+                    ranges.append(str(start))
+                else:
+                    ranges.append(f"{start}-{end}")
+                start = line
+                end = line
+        
+        # Add final range
+        if start == end:
+            ranges.append(str(start))
+        else:
+            ranges.append(f"{start}-{end}")
+        
+        return ", ".join(ranges)
     
     def _parse_review_response(
         self,
@@ -492,6 +574,7 @@ class MockCodeReviewAgent(CodeReviewAgent):
         parsed_metadata: ParserOutput,
         kb_context: KBContext,
         files: List[FileInfo],
+        valid_lines: Optional[Dict[str, List[int]]] = None,
     ) -> ReviewOutput:
         """Return mock issues without LLM call."""
         output = ReviewOutput()
