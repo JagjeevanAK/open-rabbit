@@ -1,13 +1,7 @@
-"""
-Elasticsearch index initialization script.
-Creates the knowledge base index with proper mappings for vector search.
-"""
-
 from elasticsearch import Elasticsearch
 import sys
 from pathlib import Path
 
-# Add parent directory to path to import config
 sys.path.append(str(Path(__file__).parent.parent))
 from config import settings
 

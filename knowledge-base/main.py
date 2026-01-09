@@ -45,10 +45,9 @@ def query_knowledge_base(query: str) -> str:
     return response["result"]
 
 
-if __name__ == "__main__":
-    # Example query
-    query = "Why does the Zero project prefer Dependabot for dependency updates?"
-    response = query_knowledge_base(query)
+# if __name__ == "__main__":
+#     query = "Why does the Zero project prefer Dependabot for dependency updates?"
+#     response = query_knowledge_base(query)
     
-    print(f"\nQuery: {query}")
-    print(f"AI Response: {response}")
+#     print(f"\nQuery: {query}")
+#     print(f"AI Response: {response}")

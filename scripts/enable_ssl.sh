@@ -1,8 +1,6 @@
 #!/bin/bash
 set -e
 
-# Always run this script after setting up nignx
-
 read -p "Enter domain name (e.g., jagjeevan.me): " DOMAIN
 read -p "Enter email address for Let's Encrypt notifications: " EMAIL
 

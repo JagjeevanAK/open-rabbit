@@ -13,11 +13,9 @@ class Settings(BaseSettings):
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4"
     
-    # API settings
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     
-    # Celery settings
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/0"
 

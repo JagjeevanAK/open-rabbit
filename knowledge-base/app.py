@@ -13,10 +13,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Initialize Elasticsearch client
 es_client = Elasticsearch(settings.elasticsearch_url)
-
-# Initialize embeddings (lazy loaded)
 _embeddings = None
 
 def get_embeddings():
@@ -223,16 +220,14 @@ async def search_learnings(
     learnings based on the query text.
     """
     try:
-        # Generate embedding for the query
         embeddings = get_embeddings()
         query_vector = embeddings.embed_query(q)
         
-        # Build the search query
         search_query = {
             "knn": {
                 "field": "embedding",
                 "query_vector": query_vector,
-                "k": k * 2,  # Get more results for filtering
+                "k": k * 2,
                 "num_candidates": 100
             },
             "_source": ["learning", "learnt_from", "pr", "file", "timestamp"]
@@ -315,7 +310,6 @@ async def get_pr_context_learnings(request: PRContextRequest):
         # Combine context
         query_text = " | ".join(context_parts)
         
-        # Generate embedding
         embeddings = get_embeddings()
         query_vector = embeddings.embed_query(query_text)
         
@@ -347,7 +341,6 @@ async def get_pr_context_learnings(request: PRContextRequest):
             size=request.k * 2
         )
         
-        # Process results
         results = []
         for hit in response["hits"]["hits"]:
             source = hit["_source"]
@@ -361,7 +354,6 @@ async def get_pr_context_learnings(request: PRContextRequest):
                 score=min(hit["_score"], 1.0)
             ))
         
-        # Limit results
         results = results[:request.k]
         
         return SearchResponse(
