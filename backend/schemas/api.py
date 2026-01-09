@@ -1,6 +1,15 @@
+"""
+API Schemas Package
+
+Pydantic models for API requests and responses.
+Consolidated from the old models/ directory.
+"""
+
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
+
+# Bot / Review Request Models
 
 class ReviewRequest(BaseModel):
     """Request from bot to trigger code review"""
@@ -48,6 +57,8 @@ class PRUnitTestRequest(BaseModel):
     requested_by: Optional[str] = Field(None, description="GitHub user who requested tests")
 
 
+# Task Response Models
+
 class TaskResponse(BaseModel):
     """Response for task creation"""
     task_id: str
@@ -79,3 +90,38 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     mock_llm: bool
+
+
+# Feedback / PR Review Models
+
+class PRReviewRequest(BaseModel):
+    """Request model for PR code review"""
+    repo_url: str = Field(..., description="GitHub repository URL or shorthand (e.g., 'owner/repo')")
+    pr_number: Optional[int] = Field(None, description="Pull request number")
+    branch: Optional[str] = Field(None, description="Branch name to review")
+    changed_files: Optional[List[str]] = Field(None, description="List of changed files")
+    pr_description: Optional[str] = Field(None, description="Pull request description")
+    generate_tests: bool = Field(False, description="Whether to generate unit tests")
+    installation_id: Optional[int] = Field(None, description="GitHub App installation ID")
+    auto_post: bool = Field(True, description="Automatically post review comment to GitHub PR")
+
+
+
+
+
+
+class ReviewResponse(BaseModel):
+    """Response model for review results"""
+    task_id: str
+    status: str
+    message: str
+    review_url: Optional[str] = None
+
+
+class ReviewStatusModel(BaseModel):
+    """Status model for review task"""
+    task_id: str
+    status: str
+    created_at: str
+    completed_at: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None

@@ -48,6 +48,15 @@ systemPrompt = SystemMessage(
     - analyze_changed_files: Batch analyze multiple files
     - get_parser_capabilities: Check supported languages and features
     
-    Start each review by gathering relevant knowledge base context, then use parser tools for deep analysis!
+    Web Search Tools (for up-to-date package intelligence):
+    - search_package_breaking_changes: Find breaking changes when upgrading packages
+    - search_package_deprecations: Find deprecated APIs in specific package versions
+    - search_new_package_apis: Discover new features in package updates
+    - search_package_security: Check for known CVEs and security vulnerabilities
+    - search_code_best_practices: Get current best practices for any technology
+    - search_general_web: General web search for any coding question
     
+    Start each review by gathering relevant knowledge base context, then use parser tools for deep analysis!
+    Use web search tools when reviewing package upgrades to catch breaking changes and deprecations!
+
 """)

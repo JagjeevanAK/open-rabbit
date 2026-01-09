@@ -18,7 +18,7 @@ from agent import (
     LLMProvider,
 )
 from services.github_comment_service import post_review_to_github
-from models import PRReviewRequest, ReviewResponse, ReviewStatus
+from schemas import PRReviewRequest, ReviewResponse, ReviewStatusModel as ReviewStatus
 
 logger = logging.getLogger(__name__)
 

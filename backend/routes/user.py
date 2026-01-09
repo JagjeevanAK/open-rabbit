@@ -1,14 +1,16 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from db.database import get_db
-from db import crud, schemas
+from db import crud
+from schemas import UserCreate
 
 router = APIRouter(
     prefix="/users",
     tags=["users"]
 )
+
 @router.post("/new_install")
-def new_install(user: schemas.UserCreate, db: Session = Depends(get_db)):
+def new_install(user: UserCreate, db: Session = Depends(get_db)):
     """Register a new GitHub app installation"""
     try:
         existing_install = db.query(crud.models.NewInstall).filter(
@@ -35,7 +37,7 @@ def new_install(user: schemas.UserCreate, db: Session = Depends(get_db)):
         }
 
 @router.post("/signin")
-async def signin(body: schemas.UserCreate, db: Session = Depends(get_db)):
+async def signin(body: UserCreate, db: Session = Depends(get_db)):
     db_user = crud.get_user(db, user_name=body.name)
 
     if db_user:
@@ -43,7 +45,7 @@ async def signin(body: schemas.UserCreate, db: Session = Depends(get_db)):
     return {"status": "User does not exist in db"}
 
 @router.post("/signup")
-def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
+def signup(user: UserCreate, db: Session = Depends(get_db)):
     db_user = crud.create_user(db, user=user)
     return db_user
 
