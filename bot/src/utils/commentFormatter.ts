@@ -1,5 +1,8 @@
 import { Learning } from "../services/knowledgeBase.js";
 
+// Re-export all types and functions from commentBuilder for convenience
+export * from "./commentBuilder.js";
+
 export function formatLearningsAsComment(
   learnings: Learning[],
   options?: {

@@ -5,6 +5,12 @@ import axios from "axios";
 import * as fs from "fs";
 import * as path from "path";
 import express from "express";
+import {
+    InlineComment,
+    ReviewPayload,
+    buildReviewForGitHub,
+    calculateStats,
+} from "./utils/commentBuilder.js";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8080";
 const GITHUB_PAT = process.env.GITHUB_PAT;
@@ -14,7 +20,7 @@ const TEST_MODE = process.env.TEST_MODE === "true";
 const OUTPUT_DIR = path.join(process.cwd(), "test-output");
 
 /**
- * Review comment structure for inline PR comments
+ * Review comment structure for inline PR comments (legacy format)
  */
 interface ReviewComment {
     path: string;
@@ -26,7 +32,7 @@ interface ReviewComment {
 }
 
 /**
- * Request body for /test/trigger-review endpoint
+ * Request body for /test/trigger-review endpoint (legacy format)
  */
 interface TestTriggerReviewRequest {
     owner: string;
@@ -36,6 +42,20 @@ interface TestTriggerReviewRequest {
     comments?: ReviewComment[];
     event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
     dry_run?: boolean;  // If true, save to file instead of posting
+}
+
+/**
+ * Request body for /test/trigger-structured-review endpoint (new format)
+ */
+interface TestStructuredReviewRequest {
+    owner: string;
+    repo: string;
+    pull_number: number;
+    summary: string;
+    comments: InlineComment[];
+    event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+    dry_run?: boolean;
+    auto_calculate_stats?: boolean;
 }
 
 /**
@@ -115,6 +135,99 @@ function saveReviewToFile(
         }
     } else {
         content += `## Inline Comments\n\nNo inline comments generated.\n\n`;
+    }
+
+    fs.writeFileSync(filepath, content);
+    return filepath;
+}
+
+/**
+ * Save structured review to file for inspection (dry run mode)
+ * Uses the new commentBuilder format with severity levels and stats
+ */
+function saveStructuredReviewToFile(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    formattedBody: string,
+    formattedComments: Array<{ path: string; line: number; body: string; start_line?: number }>,
+    skipped: Array<{ comment: InlineComment; reason: string }>,
+    stats?: { critical: number; warning: number; suggestion: number; nitpick: number; praise: number; filesReviewed: number }
+): string {
+    // Ensure output directory exists
+    if (!fs.existsSync(OUTPUT_DIR)) {
+        fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `structured-review-${owner}-${repo}-${prNumber}-${timestamp}.md`;
+    const filepath = path.join(OUTPUT_DIR, filename);
+
+    let content = `# Structured Code Review for ${owner}/${repo}#${prNumber}\n\n`;
+    content += `**Generated:** ${new Date().toISOString()}\n\n`;
+    content += `**Format:** Professional Structured Review\n\n`;
+    
+    // Stats section
+    if (stats) {
+        content += `## Statistics\n\n`;
+        content += `| Type | Count |\n`;
+        content += `|------|-------|\n`;
+        content += `| Critical | ${stats.critical} |\n`;
+        content += `| Warning | ${stats.warning} |\n`;
+        content += `| Suggestion | ${stats.suggestion} |\n`;
+        content += `| Nitpick | ${stats.nitpick} |\n`;
+        content += `| Praise | ${stats.praise} |\n`;
+        content += `| Files Reviewed | ${stats.filesReviewed} |\n\n`;
+    }
+
+    content += `---\n\n`;
+
+    // Summary section (formatted body from commentBuilder)
+    content += `## Review Summary\n\n${formattedBody}\n\n`;
+
+    // Inline comments section
+    if (formattedComments && formattedComments.length > 0) {
+        content += `---\n\n## Inline Comments (${formattedComments.length})\n\n`;
+        
+        // Group by file
+        const commentsByFile: { [key: string]: typeof formattedComments } = {};
+        for (const comment of formattedComments) {
+            if (!commentsByFile[comment.path]) {
+                commentsByFile[comment.path] = [];
+            }
+            commentsByFile[comment.path].push(comment);
+        }
+
+        for (const [filePath, fileComments] of Object.entries(commentsByFile)) {
+            content += `### \`${filePath}\`\n\n`;
+            
+            // Sort by line number
+            fileComments.sort((a, b) => a.line - b.line);
+            
+            for (const comment of fileComments) {
+                const lineInfo = comment.start_line 
+                    ? `Lines ${comment.start_line}-${comment.line}`
+                    : `Line ${comment.line}`;
+                
+                content += `#### ${lineInfo}\n\n`;
+                content += `${comment.body}\n\n`;
+                content += `---\n\n`;
+            }
+        }
+    } else {
+        content += `## Inline Comments\n\nNo inline comments generated.\n\n`;
+    }
+
+    // Skipped comments section
+    if (skipped && skipped.length > 0) {
+        content += `---\n\n## Skipped Comments (${skipped.length})\n\n`;
+        content += `The following comments were skipped due to validation errors:\n\n`;
+        
+        for (const { comment, reason } of skipped) {
+            content += `- **${comment.path}:${comment.line}** - ${reason}\n`;
+            content += `  - Title: ${comment.issue?.title || 'N/A'}\n`;
+        }
+        content += `\n`;
     }
 
     fs.writeFileSync(filepath, content);
@@ -484,11 +597,221 @@ export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
             output_dir: OUTPUT_DIR,
             endpoints: [
                 "POST /test/review - Trigger review from PR URL",
-                "POST /test/trigger-review - Post review results",
+                "POST /test/trigger-review - Post review results (legacy format)",
+                "POST /test/trigger-structured-review - Post review results (structured format with severity levels)",
                 "GET /test/status - This endpoint",
             ],
         });
     });
 
-    app.log.info("[Test Mode] Enabled! Endpoints: POST /test/review, POST /test/trigger-review, GET /test/status");
+    /**
+     * POST /test/trigger-structured-review
+     * Post a structured review to GitHub using PAT authentication
+     * Uses the new professional comment format with severity levels
+     * 
+     * Body: TestStructuredReviewRequest
+     */
+    router.post("/test/trigger-structured-review", async (req: Request, res: Response) => {
+        try {
+            const {
+                owner,
+                repo,
+                pull_number,
+                summary,
+                comments,
+                event = "COMMENT",
+                dry_run = true,
+                auto_calculate_stats = true,
+            } = req.body as TestStructuredReviewRequest;
+
+            // Validate required fields
+            if (!owner || !repo || !pull_number) {
+                return res.status(400).json({
+                    error: "Missing required fields",
+                    required: ["owner", "repo", "pull_number", "summary"],
+                    optional: ["comments", "event", "dry_run", "auto_calculate_stats"],
+                });
+            }
+
+            if (!summary) {
+                return res.status(400).json({
+                    error: "Missing required field: summary",
+                });
+            }
+
+            app.log.info(`[Test Mode] Creating structured review for ${owner}/${repo}#${pull_number}`);
+            app.log.info(`[Test Mode] Summary: Yes, Comments: ${comments?.length || 0}, Dry Run: ${dry_run}`);
+
+            // Build the review payload using commentBuilder
+            const reviewPayload: ReviewPayload = {
+                summary,
+                comments: comments || [],
+                event: event as "COMMENT" | "APPROVE" | "REQUEST_CHANGES",
+                stats: auto_calculate_stats && comments?.length > 0 
+                    ? calculateStats(comments) 
+                    : undefined,
+            };
+
+            // Format for GitHub API
+            const logger = (msg: string) => app.log.warn(`[Test Mode] ${msg}`);
+            const formattedReview = buildReviewForGitHub(reviewPayload, logger);
+
+            // Log skipped comments
+            if (formattedReview.skipped.length > 0) {
+                app.log.warn(`[Test Mode] Skipped ${formattedReview.skipped.length} invalid comments`);
+                formattedReview.skipped.forEach(({ comment, reason }) => {
+                    app.log.warn(`[Test Mode]   - ${comment.path}:${comment.line} - ${reason}`);
+                });
+            }
+
+            // If dry_run, save to file instead of posting
+            if (dry_run) {
+                const filepath = saveStructuredReviewToFile(
+                    owner,
+                    repo,
+                    pull_number,
+                    formattedReview.body,
+                    formattedReview.comments,
+                    formattedReview.skipped,
+                    reviewPayload.stats
+                );
+                app.log.info(`[Test Mode] Structured review saved to: ${filepath}`);
+
+                return res.status(200).json({
+                    success: true,
+                    message: "Structured review saved to file (dry run mode)",
+                    dry_run: true,
+                    output_file: filepath,
+                    summary_length: formattedReview.body.length,
+                    comments_count: formattedReview.comments.length,
+                    skipped_count: formattedReview.skipped.length,
+                    stats: reviewPayload.stats,
+                });
+            }
+
+            // Otherwise, post to GitHub using PAT
+            if (!GITHUB_PAT) {
+                return res.status(500).json({ error: "GITHUB_PAT not configured" });
+            }
+
+            const octokit = new Octokit({ auth: GITHUB_PAT });
+
+            // Get the PR to find the latest commit SHA
+            const { data: pr } = await octokit.pulls.get({
+                owner,
+                repo,
+                pull_number,
+            });
+            const commitId = pr.head.sha;
+
+            // Create the review
+            const githubPayload: any = {
+                owner,
+                repo,
+                pull_number,
+                commit_id: commitId,
+                event: formattedReview.event,
+                body: formattedReview.body,
+            };
+
+            // Add comments if any valid ones exist
+            if (formattedReview.comments.length > 0) {
+                githubPayload.comments = formattedReview.comments;
+            }
+
+            app.log.info(`[Test Mode] Posting structured review with ${formattedReview.comments.length} comments`);
+
+            try {
+                const response = await octokit.pulls.createReview(githubPayload);
+
+                app.log.info(`[Test Mode] Structured review posted successfully (ID: ${response.data.id})`);
+
+                return res.status(200).json({
+                    success: true,
+                    message: "Structured review posted to GitHub",
+                    dry_run: false,
+                    review_id: response.data.id,
+                    html_url: response.data.html_url,
+                    comments_posted: formattedReview.comments.length,
+                    comments_skipped: formattedReview.skipped.length,
+                    skipped_details: formattedReview.skipped.map(s => ({
+                        path: s.comment.path,
+                        line: s.comment.line,
+                        reason: s.reason,
+                    })),
+                    stats: reviewPayload.stats,
+                });
+            } catch (inlineErr: any) {
+                // If inline comments fail (422), fallback to summary-only review
+                if (inlineErr.status === 422 && formattedReview.comments.length > 0) {
+                    app.log.warn(`[Test Mode] 422 Error with inline comments - falling back to summary-only`);
+                    
+                    // Build a summary that includes the inline comments as text
+                    let fullBody = formattedReview.body;
+                    
+                    fullBody += "\n\n---\n\n## Inline Comments (included in summary due to positioning error)\n\n";
+                    
+                    // Group by file
+                    const commentsByFile: { [key: string]: typeof formattedReview.comments } = {};
+                    for (const comment of formattedReview.comments) {
+                        if (!commentsByFile[comment.path]) {
+                            commentsByFile[comment.path] = [];
+                        }
+                        commentsByFile[comment.path].push(comment);
+                    }
+                    
+                    for (const [filePath, fileComments] of Object.entries(commentsByFile)) {
+                        fullBody += `### \`${filePath}\`\n\n`;
+                        for (const comment of fileComments) {
+                            const lineInfo = comment.start_line 
+                                ? `**Lines ${comment.start_line}-${comment.line}:**`
+                                : `**Line ${comment.line}:**`;
+                            fullBody += `${lineInfo}\n${comment.body}\n\n`;
+                        }
+                    }
+                    
+                    // Post as summary only
+                    const fallbackResponse = await octokit.pulls.createReview({
+                        owner,
+                        repo,
+                        pull_number,
+                        commit_id: commitId,
+                        body: fullBody,
+                        event: formattedReview.event,
+                    });
+                    
+                    app.log.info(`[Test Mode] Fallback structured review posted (ID: ${fallbackResponse.data.id})`);
+                    
+                    return res.status(200).json({
+                        success: true,
+                        message: "Structured review posted (fallback mode - inline comments in summary)",
+                        dry_run: false,
+                        review_id: fallbackResponse.data.id,
+                        html_url: fallbackResponse.data.html_url,
+                        comments_posted: 0,
+                        inline_comments_in_summary: formattedReview.comments.length,
+                        fallback_mode: true,
+                        stats: reviewPayload.stats,
+                    });
+                }
+                
+                // Re-throw if not a 422 or no comments to fallback
+                throw inlineErr;
+            }
+
+        } catch (err: any) {
+            app.log.error("[Test Mode] Error posting structured review:", err.message);
+
+            if (err.status === 422) {
+                app.log.error("[Test Mode] 422 Error - likely invalid line numbers in comments");
+            }
+
+            return res.status(err.status || 500).json({
+                error: err.message,
+                details: err.response?.data,
+            });
+        }
+    });
+
+    app.log.info("[Test Mode] Enabled! Endpoints: POST /test/review, POST /test/trigger-review, POST /test/trigger-structured-review, GET /test/status");
 };

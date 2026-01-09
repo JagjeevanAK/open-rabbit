@@ -10,6 +10,15 @@
 
 import { Probot, Context } from "probot";
 import { knowledgeBaseService } from "./services/knowledgeBase.js";
+import {
+  InlineComment,
+  ReviewPayload,
+  buildReviewForGitHub,
+  createSuggestionIssue,
+  createInlineComment,
+  buildCollapsible,
+  calculateStats,
+} from "./utils/commentBuilder.js";
 
 // Store bot comment IDs to track user feedback
 const botCommentTracker = new Map<string, {
@@ -281,7 +290,7 @@ export default (app: Probot) => {
 };
 
 /**
- * Create an enhanced review with knowledge base context
+ * Create an enhanced review with knowledge base context using professional formatting
  */
 async function createEnhancedReview(
   context: Context<"pull_request.opened">,
@@ -290,7 +299,7 @@ async function createEnhancedReview(
   const pr = context.payload.pull_request;
   const repoName = context.payload.repository.full_name;
   
-  const reviewComments = [];
+  const inlineComments: InlineComment[] = [];
   
   const files = await context.octokit.pulls.listFiles({
     owner: context.payload.repository.owner.login,
@@ -315,16 +324,50 @@ async function createEnhancedReview(
       const addedLines = lines.filter(l => l.startsWith('+')).length;
       
       if (addedLines > 0) {
-        const position = Math.min(5, lines.length - 1);
-        
-        const commentBody = `💡 **Based on project learnings:** ${learning.learning_text}\n\n_This suggestion is based on past code reviews in this repository._`;
-        
-        reviewComments.push({
-          path: file.filename,
-          position,
-          body: commentBody,
-        });
+        // Find a valid line in the diff (prefer lines with actual code changes)
+        let targetLine = 1;
+        let lineCounter = 0;
+        for (const line of lines) {
+          if (line.startsWith('@@')) {
+            // Parse the @@ -a,b +c,d @@ format to get the starting line
+            const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            if (match) {
+              targetLine = parseInt(match[1], 10);
+              lineCounter = 0;
+            }
+          } else if (!line.startsWith('-')) {
+            lineCounter++;
+            if (line.startsWith('+') && lineCounter <= 10) {
+              targetLine = targetLine + lineCounter - 1;
+              break;
+            }
+          }
+        }
 
+        // Create a structured issue using the new format
+        const issue = createSuggestionIssue(
+          'best-practice',
+          'Project Learning',
+          learning.learning_text,
+          {
+            details: learning.original_comment 
+              ? `From a previous code review:\n\n> ${learning.original_comment.substring(0, 200)}${learning.original_comment.length > 200 ? '...' : ''}`
+              : undefined,
+            learnings: relevantLearnings.slice(1, 3).map((l: any) => l.learning_text),
+          }
+        );
+
+        // Create the inline comment
+        const comment = createInlineComment(
+          file.filename,
+          targetLine,
+          issue,
+          { side: 'RIGHT' }
+        );
+
+        inlineComments.push(comment);
+
+        // Track for feedback collection
         const botCommentId = `bot-${Date.now()}-${file.filename}`;
         botCommentTracker.set(`${repoName}-${pr.number}-${botCommentId}`, {
           commentId: botCommentId,
@@ -342,8 +385,9 @@ async function createEnhancedReview(
     }
   }
 
-  if (reviewComments.length > 0) {
+  if (inlineComments.length > 0) {
     try {
+      // Build learnings summary for the review body
       const usedLearningsText = learnings.slice(0, 3).map((l, idx) => {
         const source = l.source || {};
         return `**Learning ${idx + 1}:**\n` +
@@ -353,22 +397,43 @@ async function createEnhancedReview(
                `- Confidence: ${(l.confidence_score * 100).toFixed(0)}%`;
       }).join('\n\n');
 
-      const reviewBody = `🤖 **AI-Powered Review with Project Context**\n\n` +
-                        `I've analyzed your changes with context from past code reviews:\n\n` +
-                        `### 📚 Learnings used\n\n${usedLearningsText}\n\n` +
-                        `---\n\n` +
-                        `💡 These suggestions are based on patterns and feedback from previous PRs in this repository.`;
+      const learningsCollapsible = buildCollapsible(
+        '📚 Learnings used in this review',
+        usedLearningsText,
+        false
+      );
 
-      await context.octokit.pulls.createReview({
-        owner: context.payload.repository.owner.login,
-        repo: context.payload.repository.name,
-        pull_number: pr.number,
-        event: "COMMENT",
-        body: reviewBody,
-        comments: reviewComments,
-      });
-      
-      console.log(`✅ Created review with ${reviewComments.length} comments using ${learnings.length} learnings`);
+      // Build the review payload
+      const reviewPayload: ReviewPayload = {
+        summary: `I've analyzed your changes with context from past code reviews.\n\n${learningsCollapsible}\n\n---\n\n💡 These suggestions are based on patterns and feedback from previous PRs in this repository.`,
+        comments: inlineComments,
+        event: 'COMMENT',
+        stats: calculateStats(inlineComments),
+      };
+
+      // Format for GitHub API
+      const formattedReview = buildReviewForGitHub(reviewPayload, console.warn);
+
+      // Log any skipped comments
+      if (formattedReview.skipped.length > 0) {
+        console.warn(`Skipped ${formattedReview.skipped.length} invalid comments`);
+      }
+
+      // Only create review if we have valid comments
+      if (formattedReview.comments.length > 0) {
+        await context.octokit.pulls.createReview({
+          owner: context.payload.repository.owner.login,
+          repo: context.payload.repository.name,
+          pull_number: pr.number,
+          event: "COMMENT",
+          body: formattedReview.body,
+          comments: formattedReview.comments,
+        });
+        
+        console.log(`✅ Created review with ${formattedReview.comments.length} comments using ${learnings.length} learnings`);
+      } else {
+        console.log(`⚠️ No valid comments to post after formatting`);
+      }
     } catch (error) {
       console.error("Error creating review:", error);
     }

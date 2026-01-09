@@ -1,8 +1,14 @@
 import { Request, Response } from "express";
 import { Probot, ApplicationFunctionOptions } from "probot";
+import {
+    InlineComment,
+    ReviewPayload,
+    buildReviewForGitHub,
+    calculateStats,
+} from "./utils/commentBuilder.js";
 
 /**
- * Review comment structure for inline PR comments
+ * Review comment structure for inline PR comments (legacy format)
  */
 interface ReviewComment {
     path: string;           // File path
@@ -14,7 +20,7 @@ interface ReviewComment {
 }
 
 /**
- * Request body for /trigger-review endpoint
+ * Request body for /trigger-review endpoint (legacy format)
  */
 interface TriggerReviewRequest {
     owner: string;
@@ -24,6 +30,21 @@ interface TriggerReviewRequest {
     body?: string;              // Summary comment (optional)
     comments?: ReviewComment[]; // Inline comments (optional)
     event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+}
+
+/**
+ * Request body for /trigger-structured-review endpoint (new format)
+ * Uses structured ReviewIssue types for professional formatting
+ */
+interface StructuredReviewRequest {
+    owner: string;
+    repo: string;
+    pull_number: number;
+    installation_id: number;
+    summary: string;                    // Review summary text
+    comments: InlineComment[];          // Structured inline comments
+    event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+    auto_calculate_stats?: boolean;     // Auto-calculate stats from comments
 }
 
 export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
@@ -214,11 +235,154 @@ export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
             endpoints: [
                 "POST /trigger-comment",
                 "POST /trigger-review",
+                "POST /trigger-structured-review",
                 "GET /health"
             ],
             timestamp: new Date().toISOString()
         });
     });
 
-    app.log.info("Manual trigger endpoints registered: POST /trigger-comment, POST /trigger-review, GET /health");
+    /**
+     * POST /trigger-structured-review
+     * Professional code review endpoint with structured issue types
+     * 
+     * This endpoint supports:
+     * - 5 severity levels: critical, warning, suggestion, nitpick, praise
+     * - Collapsible sections for details, learnings, AI prompts
+     * - GitHub suggestion blocks for auto-applicable fixes
+     * - Diff preview blocks
+     * - Multi-line comments
+     * - Auto-calculated statistics
+     * 
+     * Invalid comments are logged and skipped (not failing the request)
+     */
+    router.post("/trigger-structured-review", async (req: Request, res: Response) => {
+        try {
+            const { 
+                owner, 
+                repo, 
+                pull_number, 
+                installation_id,
+                summary,
+                comments,
+                event = "COMMENT",
+                auto_calculate_stats = true,
+            } = req.body as StructuredReviewRequest;
+        
+            // Validate required fields
+            if (!owner || !repo || !pull_number || !installation_id) {
+                return res.status(400).json({ 
+                    error: "Missing required fields",
+                    required: ["owner", "repo", "pull_number", "installation_id", "summary"],
+                    optional: ["comments", "event", "auto_calculate_stats"]
+                });
+            }
+
+            if (!summary) {
+                return res.status(400).json({ 
+                    error: "Missing required field: summary",
+                });
+            }
+
+            app.log.info(`Creating structured review for ${owner}/${repo}#${pull_number} with ${comments?.length || 0} inline comments`);
+
+            // Build the review payload
+            const reviewPayload: ReviewPayload = {
+                summary,
+                comments: comments || [],
+                event: event as "COMMENT" | "APPROVE" | "REQUEST_CHANGES",
+                stats: auto_calculate_stats && comments?.length > 0 
+                    ? calculateStats(comments) 
+                    : undefined,
+            };
+
+            // Format for GitHub API using our builder
+            const logger = (msg: string) => app.log.warn(msg);
+            const formattedReview = buildReviewForGitHub(reviewPayload, logger);
+
+            // Log skipped comments (but don't fail)
+            if (formattedReview.skipped.length > 0) {
+                app.log.warn(`Skipped ${formattedReview.skipped.length} invalid comments:`);
+                formattedReview.skipped.forEach(({ comment, reason }) => {
+                    app.log.warn(`  - ${comment.path}:${comment.line} - ${reason}`);
+                });
+            }
+
+            // Authenticate using the installation ID
+            const octokit = await app.auth(Number(installation_id));
+
+            // Get the PR to find the latest commit SHA (required for review comments)
+            const pr = await octokit.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: Number(pull_number),
+            });
+            const commitId = pr.data.head.sha;
+
+            // Create the review
+            const githubPayload: any = {
+                owner,
+                repo,
+                pull_number: Number(pull_number),
+                commit_id: commitId,
+                event: formattedReview.event,
+                body: formattedReview.body,
+            };
+
+            // Add comments if any valid ones exist
+            if (formattedReview.comments.length > 0) {
+                githubPayload.comments = formattedReview.comments;
+            }
+
+            app.log.info(`Structured review payload: ${JSON.stringify({
+                owner,
+                repo,
+                pull_number,
+                event: formattedReview.event,
+                body_length: formattedReview.body.length,
+                valid_comments: formattedReview.comments.length,
+                skipped_comments: formattedReview.skipped.length,
+            })}`);
+
+            const response = await octokit.rest.pulls.createReview(githubPayload);
+
+            app.log.info(`Structured review created successfully for ${owner}/${repo}#${pull_number} (review ID: ${response.data.id})`);
+            
+            return res.status(200).json({ 
+                success: true,
+                message: "Structured review created successfully",
+                review_id: response.data.id,
+                comments_posted: formattedReview.comments.length,
+                comments_skipped: formattedReview.skipped.length,
+                skipped_details: formattedReview.skipped.map(s => ({
+                    path: s.comment.path,
+                    line: s.comment.line,
+                    reason: s.reason,
+                })),
+                html_url: response.data.html_url,
+                stats: reviewPayload.stats,
+            });
+        } catch (err: any) {
+            app.log.error("Error creating structured review:", err);
+            
+            // Provide more detailed error info
+            const errorDetails = {
+                message: err.message,
+                status: err.status,
+                response: err.response?.data,
+            };
+            
+            // Common error: comment position is invalid
+            if (err.status === 422) {
+                app.log.error("422 Error - likely invalid line numbers. Check that lines exist in the PR diff.");
+            }
+            
+            return res.status(err.status || 500).json({ 
+                error: err.message,
+                details: errorDetails,
+            });
+        }
+    });
+
+    app.log.info("Manual trigger endpoints registered: POST /trigger-comment, POST /trigger-review, POST /trigger-structured-review, GET /health");
 };
