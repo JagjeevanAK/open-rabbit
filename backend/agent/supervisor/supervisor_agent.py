@@ -75,7 +75,13 @@ from ..logging_config import (
     setup_logging,
 )
 
-# Initialize logging
+# Langfuse integration for observability and evals
+from ..langfuse_integration import (
+    create_langfuse_trace,
+    flush_langfuse,
+)
+from ..evaluators import run_all_evaluators
+
 setup_logging()
 logger = get_logger(__name__)
 
@@ -976,6 +982,19 @@ class SupervisorAgent:
                 "entry_point": "parse_intent",
             })
             
+            # Create Langfuse trace for this workflow
+            langfuse_trace = create_langfuse_trace(
+                name=f"review-{request.pr_number or 'manual'}",
+                session_id=session_id,
+                user_id=request.owner,
+                tags=["open-rabbit", self.config.llm_provider.value],
+                metadata={
+                    "pr_number": request.pr_number,
+                    "repo_url": request.repo_url,
+                    "files_count": len(request.files),
+                },
+            )
+            
             # Run the workflow
             final_state = await self.compiled_graph.ainvoke(
                 initial_state,
@@ -988,6 +1007,23 @@ class SupervisorAgent:
             if final_state.get("final_output"):
                 output = self._reconstruct_output(final_state["final_output"])
                 output.duration_seconds = workflow_duration / 1000
+                
+                # Run evaluators and log scores to Langfuse
+                trace_id = langfuse_trace.id if langfuse_trace else None
+                if trace_id:
+                    try:
+                        eval_scores = run_all_evaluators(output, trace_id=trace_id)
+                        log_with_data(logger, 20, "Evaluators completed", {
+                            "session_id": session_id,
+                            "scores": {s.name: s.value for s in eval_scores},
+                        })
+                    except Exception as eval_error:
+                        log_with_data(logger, 30, f"Evaluation failed (non-fatal): {eval_error}", {
+                            "session_id": session_id,
+                        })
+                
+                # Flush Langfuse to ensure traces are sent
+                flush_langfuse()
                 
                 # Log successful completion
                 log_with_data(logger, 20, "Supervisor workflow completed successfully", {

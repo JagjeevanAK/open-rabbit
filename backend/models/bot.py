@@ -1,9 +1,3 @@
-"""
-Bot Models
-
-Pydantic models for bot webhook request/response schemas.
-"""
-
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 

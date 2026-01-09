@@ -60,8 +60,6 @@ def insert_files(db: Session, payload: schemas.ChangedFileReq):
     db.refresh(files_data)
 
 
-# ============ Checkpoint CRUD Operations ============
-
 def create_checkpoint(
     db: Session,
     checkpoint: schemas.CheckpointCreate

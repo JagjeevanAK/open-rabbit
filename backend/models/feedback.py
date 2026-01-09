@@ -1,9 +1,3 @@
-"""
-Feedback Models
-
-Pydantic models for code review feedback endpoints.
-"""
-
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
