@@ -1,4 +1,41 @@
 services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: open-rabbit-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - open-rabbit-network
+
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: open-rabbit-bot
+    restart: unless-stopped
+    env_file:
+      - ./bot/.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - open-rabbit-network
+
   postgres:
     image: postgres:16-alpine
     container_name: open-rabbit-postgres

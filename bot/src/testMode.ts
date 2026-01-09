@@ -226,12 +226,24 @@ export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
                 });
             }
 
+            // For fork PRs, we need to clone from the fork's repository
+            const headOwner = pr.head.repo?.owner?.login || owner;
+            const headRepo = pr.head.repo?.name || repo;
+            const isFork = pr.head.repo?.full_name !== `${owner}/${repo}`;
+
+            if (isFork) {
+                app.log.info(`[Test Mode] PR is from fork: ${headOwner}/${headRepo}`);
+            }
+
             // Call backend to trigger review
             const requestBody = {
                 owner,
                 repo,
                 pr_number,
                 branch: pr.head.ref,
+                base_branch: pr.base.ref,  // Pass base branch for diff comparison
+                head_owner: headOwner,     // Fork owner (for cloning)
+                head_repo: headRepo,       // Fork repo name (for cloning)
                 installation_id: 0,  // Not used in test mode
                 changed_files: changedFiles,
                 test_mode: true,
@@ -360,7 +372,7 @@ export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
                 return formatted;
             }) || [];
 
-            // Create the review
+            // Create the review with inline comments
             const reviewPayload: any = {
                 owner,
                 repo,
@@ -377,18 +389,74 @@ export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
                 reviewPayload.comments = formattedComments;
             }
 
-            const response = await octokit.pulls.createReview(reviewPayload);
+            try {
+                const response = await octokit.pulls.createReview(reviewPayload);
 
-            app.log.info(`[Test Mode] Review posted successfully (ID: ${response.data.id})`);
+                app.log.info(`[Test Mode] Review posted successfully (ID: ${response.data.id})`);
 
-            return res.status(200).json({
-                success: true,
-                message: "Review posted to GitHub",
-                dry_run: false,
-                review_id: response.data.id,
-                html_url: response.data.html_url,
-                comments_posted: formattedComments.length,
-            });
+                return res.status(200).json({
+                    success: true,
+                    message: "Review posted to GitHub",
+                    dry_run: false,
+                    review_id: response.data.id,
+                    html_url: response.data.html_url,
+                    comments_posted: formattedComments.length,
+                });
+            } catch (inlineErr: any) {
+                // If inline comments fail (422), fallback to summary-only review
+                if (inlineErr.status === 422 && formattedComments.length > 0) {
+                    app.log.warn(`[Test Mode] 422 Error with inline comments - falling back to summary comment`);
+                    
+                    // Build a summary that includes the inline comments as text
+                    let fullBody = body || "";
+                    
+                    if (formattedComments.length > 0) {
+                        fullBody += "\n\n---\n\n## Inline Comments\n\n";
+                        
+                        // Group by file
+                        const commentsByFile: { [key: string]: typeof formattedComments } = {};
+                        for (const comment of formattedComments) {
+                            if (!commentsByFile[comment.path]) {
+                                commentsByFile[comment.path] = [];
+                            }
+                            commentsByFile[comment.path].push(comment);
+                        }
+                        
+                        for (const [filePath, fileComments] of Object.entries(commentsByFile)) {
+                            fullBody += `### \`${filePath}\`\n\n`;
+                            for (const comment of fileComments) {
+                                fullBody += `**Line ${comment.line}:**\n${comment.body}\n\n`;
+                            }
+                        }
+                    }
+                    
+                    // Post as summary only
+                    const fallbackResponse = await octokit.pulls.createReview({
+                        owner,
+                        repo,
+                        pull_number,
+                        commit_id: commitId,
+                        body: fullBody,
+                        event: event as "COMMENT" | "APPROVE" | "REQUEST_CHANGES",
+                    });
+                    
+                    app.log.info(`[Test Mode] Fallback review posted successfully (ID: ${fallbackResponse.data.id})`);
+                    
+                    return res.status(200).json({
+                        success: true,
+                        message: "Review posted to GitHub (fallback mode - inline comments included in summary)",
+                        dry_run: false,
+                        review_id: fallbackResponse.data.id,
+                        html_url: fallbackResponse.data.html_url,
+                        comments_posted: 0,
+                        inline_comments_in_summary: formattedComments.length,
+                        fallback_mode: true,
+                    });
+                }
+                
+                // Re-throw if not a 422 or no comments to fallback
+                throw inlineErr;
+            }
 
         } catch (err: any) {
             app.log.error("[Test Mode] Error posting review:", err.message);
