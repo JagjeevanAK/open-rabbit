@@ -7,6 +7,7 @@ import { Probot } from "probot";
 import manualTrigger from "./comment.js";
 import newInstallation from "./newInstallation.js";
 import unitTest from "./unitTest.js";
+import unitTestMention from "./unitTestMention.js";
 import feedbackHandler from "./feedbackHandler.js";
 import autoReview from "./autoReview.js";
 import manualReview from "./manualReview.js";
@@ -22,6 +23,9 @@ export default (app: Probot, options: any) => {
   // Load unit test generation handler (/create-unit-test command)
   unitTest(app);
 
+  // Load @openrabbit unit-test mention handler (commits tests to PR branch)
+  unitTestMention(app);
+
   // Load feedback handler for KB learning loop
   feedbackHandler(app);
 
@@ -35,5 +39,5 @@ export default (app: Probot, options: any) => {
   // Enable with TEST_MODE=true and GITHUB_PAT env vars
   testMode(app, options);
 
-  app.log.info("Open Rabbit bot initialized with handlers: autoReview, manualReview, unitTest, feedbackHandler, testMode");
+  app.log.info("Open Rabbit bot initialized with handlers: autoReview, manualReview, unitTest, unitTestMention, feedbackHandler, testMode");
 };

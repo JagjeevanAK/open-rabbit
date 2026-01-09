@@ -11,6 +11,7 @@ from datetime import datetime
 import uuid
 import os
 import time
+import httpx
 
 from agent import (
     SupervisorAgent,
@@ -31,9 +32,13 @@ from agent.services.sandbox_manager import (
     create_sandbox_manager,
 )
 from agent.subagents.comment_formatter_agent import CommentFormatterAgent
+from agent.subagents.unit_test_agent import UnitTestAgent
+from agent.subagents.parser_agent import ParserAgent
+from agent.schemas.common import KBContext
 from models import (
     ReviewRequest,
     UnitTestRequest,
+    PRUnitTestRequest,
     TaskResponse,
     TaskStatus,
     TaskListResponse,
@@ -164,6 +169,56 @@ async def create_unit_tests(request: UnitTestRequest, background_tasks: Backgrou
         status="pending",
         message=f"Unit test generation started for {request.owner}/{request.repo}",
         test_branch=test_branch
+    )
+
+
+@router.post("/generate-pr-tests", response_model=TaskResponse)
+async def generate_pr_tests(request: PRUnitTestRequest, background_tasks: BackgroundTasks):
+    """
+    Generate unit tests for PR changed files and commit directly to the branch.
+    
+    This endpoint is triggered by @openrabbit unit-test mentions on PRs.
+    It generates tests for the specified files and commits them directly
+    to the PR branch using the bot's /commit-files endpoint.
+    """
+    task_id = str(uuid.uuid4())
+    
+    # Set session ID for log correlation
+    set_session_id(task_id)
+    
+    log_with_data(logger, 20, "PR unit test request received", {
+        "task_id": task_id,
+        "owner": request.owner,
+        "repo": request.repo,
+        "pr_number": request.pr_number,
+        "branch": request.branch,
+        "target_files": request.target_files,
+        "test_framework": request.test_framework,
+        "requested_by": request.requested_by,
+    })
+    
+    bot_tasks[task_id] = {
+        "status": "pending",
+        "owner": request.owner,
+        "repo": request.repo,
+        "pr_number": request.pr_number,
+        "branch": request.branch,
+        "created_at": datetime.utcnow().isoformat(),
+        "completed_at": None,
+        "result": None,
+        "error": None
+    }
+    
+    background_tasks.add_task(_execute_pr_unit_test_generation, task_id, request)
+    
+    log_with_data(logger, 20, "PR unit test task queued for background execution", {
+        "task_id": task_id,
+    })
+    
+    return TaskResponse(
+        task_id=task_id,
+        status="pending",
+        message=f"Unit test generation started for {request.owner}/{request.repo}#{request.pr_number}"
     )
 
 
@@ -675,3 +730,333 @@ def _detect_language(file_path: str) -> str:
             return lang
     
     return "unknown"
+
+
+# Bot endpoint URL for committing files
+BOT_URL = os.getenv("BOT_URL", "http://localhost:3000")
+
+
+async def _execute_pr_unit_test_generation(task_id: str, request: PRUnitTestRequest):
+    """
+    Background task to generate unit tests for PR files and commit them.
+    
+    Flow:
+    1. Create E2B sandbox
+    2. Clone repo at PR branch
+    3. Read target files
+    4. Parse files with ParserAgent
+    5. Generate tests with UnitTestAgent
+    6. Commit tests via bot's /commit-files endpoint
+    7. Cleanup sandbox
+    """
+    sandbox_manager = None
+    workflow_start = time.perf_counter()
+    
+    # Set session ID for log correlation
+    set_session_id(task_id)
+    
+    log_with_data(logger, 20, "Starting PR unit test generation", {
+        "task_id": task_id,
+        "owner": request.owner,
+        "repo": request.repo,
+        "pr_number": request.pr_number,
+        "branch": request.branch,
+        "target_files": request.target_files,
+        "test_framework": request.test_framework,
+    })
+    
+    generated_files: List[Dict[str, Any]] = []
+    failed_files: List[Dict[str, str]] = []
+    
+    try:
+        bot_tasks[task_id]["status"] = "running"
+        
+        # Initialize sandbox manager
+        try:
+            sandbox_manager = _get_sandbox_manager()
+        except ValueError as e:
+            log_with_data(logger, 40, "E2B not configured", {
+                "task_id": task_id,
+                "error": str(e),
+            })
+            raise Exception("E2B_API_KEY not configured. E2B sandbox is required.")
+        
+        # Create sandbox
+        sandbox_start = time.perf_counter()
+        await sandbox_manager.create_sandbox(
+            session_id=task_id,
+            metadata={"pr": f"{request.owner}/{request.repo}#{request.pr_number}"}
+        )
+        sandbox_duration_ms = (time.perf_counter() - sandbox_start) * 1000
+        
+        log_with_data(logger, 20, "Sandbox created for test generation", {
+            "task_id": task_id,
+            "duration_ms": round(sandbox_duration_ms, 2),
+        })
+        
+        # Determine clone parameters (fork vs same-repo)
+        fork_owner = request.head_owner or request.owner
+        fork_repo = request.head_repo or request.repo
+        base_branch = request.base_branch or "main"
+        
+        # Clone repository in sandbox
+        clone_start = time.perf_counter()
+        repo_path = await sandbox_manager.clone_fork_repo(
+            session_id=task_id,
+            fork_owner=fork_owner,
+            fork_repo=fork_repo,
+            branch=request.branch,
+            base_owner=request.owner,
+            base_repo=request.repo,
+            base_branch=base_branch,
+        )
+        clone_duration_ms = (time.perf_counter() - clone_start) * 1000
+        
+        log_with_data(logger, 20, "Repository cloned for test generation", {
+            "task_id": task_id,
+            "repo_path": repo_path,
+            "duration_ms": round(clone_duration_ms, 2),
+        })
+        
+        # Read target files from sandbox
+        files: List[FileInfo] = []
+        for file_path in request.target_files:
+            full_path = f"{repo_path}/{file_path}"
+            
+            try:
+                content = await sandbox_manager.read_file(task_id, full_path)
+                
+                # Skip large files (>100KB for test generation)
+                if len(content) > 100_000:
+                    failed_files.append({
+                        "file": file_path,
+                        "reason": "File too large (>100KB)"
+                    })
+                    continue
+                
+                files.append(FileInfo(
+                    path=file_path,
+                    content=content,
+                    language=_detect_language(file_path),
+                ))
+                
+            except SandboxOperationError as e:
+                failed_files.append({
+                    "file": file_path,
+                    "reason": f"Could not read file: {str(e)[:50]}"
+                })
+                continue
+        
+        log_with_data(logger, 20, "Files loaded for test generation", {
+            "task_id": task_id,
+            "files_loaded": len(files),
+            "files_failed": len(failed_files),
+        })
+        
+        if not files:
+            raise Exception("No testable files could be read from the repository")
+        
+        # Run Parser Agent to understand code structure
+        parser_start = time.perf_counter()
+        parser_agent = ParserAgent()
+        parser_output = await parser_agent.run(files)
+        parser_duration_ms = (time.perf_counter() - parser_start) * 1000
+        
+        log_with_data(logger, 20, "Parser completed", {
+            "task_id": task_id,
+            "files_parsed": len(parser_output.output.files) if parser_output.output else 0,
+            "duration_ms": round(parser_duration_ms, 2),
+        })
+        
+        # Run Unit Test Agent
+        test_agent_start = time.perf_counter()
+        unit_test_agent = UnitTestAgent()
+        
+        # Create empty KB context (could enhance later with project patterns)
+        kb_context = KBContext()
+        
+        test_output = await unit_test_agent.run(
+            parsed_metadata=parser_output.output,
+            kb_context=kb_context,
+            target_files=[f.path for f in files],
+            repo_path=repo_path,
+        )
+        test_agent_duration_ms = (time.perf_counter() - test_agent_start) * 1000
+        
+        log_with_data(logger, 20, "Unit test generation completed", {
+            "task_id": task_id,
+            "tests_generated": test_output.output.total_tests if test_output.output else 0,
+            "duration_ms": round(test_agent_duration_ms, 2),
+        })
+        
+        # Group tests by test file path
+        test_files_content: Dict[str, str] = {}
+        if test_output.output and test_output.output.tests:
+            for test in test_output.output.tests:
+                if test.test_file not in test_files_content:
+                    test_files_content[test.test_file] = ""
+                # Use the helper to get combined content
+                test_files_content[test.test_file] = test_output.output.get_test_code_for_file(test.test_file)
+        
+        if not test_files_content:
+            log_with_data(logger, 30, "No tests were generated", {
+                "task_id": task_id,
+            })
+            
+            bot_tasks[task_id]["status"] = "completed"
+            bot_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
+            bot_tasks[task_id]["result"] = {
+                "generated_files": [],
+                "failed_files": failed_files,
+                "message": "No tests were generated",
+            }
+            return
+        
+        # Prepare files for commit
+        files_to_commit = [
+            {"path": path, "content": content}
+            for path, content in test_files_content.items()
+            if content.strip()  # Only commit non-empty files
+        ]
+        
+        log_with_data(logger, 20, "Preparing to commit test files", {
+            "task_id": task_id,
+            "files_to_commit": len(files_to_commit),
+            "file_paths": [f["path"] for f in files_to_commit],
+        })
+        
+        # Commit tests via bot's /commit-files endpoint
+        commit_message = _build_test_commit_message(
+            [f["path"] for f in files_to_commit],
+            request.target_files
+        )
+        
+        commit_result = await _commit_files_to_branch(
+            owner=request.owner,
+            repo=request.repo,
+            branch=request.branch,
+            files=files_to_commit,
+            message=commit_message,
+            installation_id=request.installation_id,
+        )
+        
+        if commit_result.get("success"):
+            generated_files = [
+                {"path": f["path"], "content_length": len(f["content"])}
+                for f in files_to_commit
+            ]
+            
+            log_with_data(logger, 20, "Tests committed successfully", {
+                "task_id": task_id,
+                "commit_sha": commit_result.get("sha"),
+                "files_committed": len(generated_files),
+            })
+            
+            bot_tasks[task_id]["status"] = "completed"
+            bot_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
+            bot_tasks[task_id]["result"] = {
+                "generated_files": [f["path"] for f in files_to_commit],
+                "failed_files": failed_files,
+                "commit_sha": commit_result.get("sha"),
+                "commit_url": commit_result.get("commitUrl"),
+                "tests_generated": test_output.output.total_tests if test_output.output else 0,
+            }
+        else:
+            raise Exception(f"Failed to commit tests: {commit_result.get('error')}")
+        
+        total_duration_ms = (time.perf_counter() - workflow_start) * 1000
+        log_with_data(logger, 20, "PR unit test generation completed", {
+            "task_id": task_id,
+            "total_duration_ms": round(total_duration_ms, 2),
+            "files_generated": len(generated_files),
+        })
+        
+    except Exception as e:
+        total_duration_ms = (time.perf_counter() - workflow_start) * 1000
+        
+        log_with_data(logger, 40, f"PR unit test generation failed: {e}", {
+            "task_id": task_id,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "duration_ms": round(total_duration_ms, 2),
+        })
+        
+        bot_tasks[task_id]["status"] = "failed"
+        bot_tasks[task_id]["completed_at"] = datetime.utcnow().isoformat()
+        bot_tasks[task_id]["error"] = str(e)
+        
+    finally:
+        # Clean up sandbox
+        if sandbox_manager:
+            try:
+                await sandbox_manager.kill_sandbox(task_id)
+                log_with_data(logger, 10, "Sandbox cleaned up", {
+                    "task_id": task_id,
+                })
+            except Exception as e:
+                log_with_data(logger, 30, f"Failed to cleanup sandbox: {e}", {
+                    "task_id": task_id,
+                    "error": str(e),
+                })
+
+
+def _build_test_commit_message(test_files: List[str], source_files: List[str]) -> str:
+    """Build a descriptive commit message for test files."""
+    if len(source_files) == 1:
+        source_name = source_files[0].split("/")[-1]
+        return f"test: add unit tests for {source_name}"
+    elif len(source_files) <= 3:
+        source_names = [f.split("/")[-1] for f in source_files]
+        return f"test: add unit tests for {', '.join(source_names)}"
+    else:
+        return f"test: add unit tests for {len(source_files)} files"
+
+
+async def _commit_files_to_branch(
+    owner: str,
+    repo: str,
+    branch: str,
+    files: List[Dict[str, str]],
+    message: str,
+    installation_id: int,
+) -> Dict[str, Any]:
+    """
+    Commit files to a branch via the bot's /commit-files endpoint.
+    
+    Returns:
+        Dict with success, sha, commitUrl, or error
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{BOT_URL}/commit-files",
+                json={
+                    "owner": owner,
+                    "repo": repo,
+                    "branch": branch,
+                    "installation_id": installation_id,
+                    "files": files,
+                    "message": message,
+                },
+                timeout=60.0,
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {
+                    "success": False,
+                    "error": f"HTTP {response.status_code}: {response.text[:200]}",
+                }
+                
+    except Exception as e:
+        log_with_data(logger, 40, f"Failed to call bot /commit-files: {e}", {
+            "owner": owner,
+            "repo": repo,
+            "branch": branch,
+            "error": str(e),
+        })
+        return {
+            "success": False,
+            "error": str(e),
+        }

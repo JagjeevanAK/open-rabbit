@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+import express, { Request, Response } from "express";
 import { Probot, ApplicationFunctionOptions } from "probot";
 import {
     InlineComment,
@@ -6,6 +6,10 @@ import {
     buildReviewForGitHub,
     calculateStats,
 } from "./utils/commentBuilder.js";
+import {
+    createMultiFileCommit,
+    FileToCommit,
+} from "./utils/githubCommit.js";
 
 /**
  * Review comment structure for inline PR comments (legacy format)
@@ -47,8 +51,24 @@ interface StructuredReviewRequest {
     auto_calculate_stats?: boolean;     // Auto-calculate stats from comments
 }
 
+/**
+ * Request body for /commit-files endpoint
+ * Used by backend to commit generated files (tests, etc.) to a branch
+ */
+interface CommitFilesRequest {
+    owner: string;
+    repo: string;
+    branch: string;
+    installation_id: number;
+    files: FileToCommit[];              // Files to commit (path + content)
+    message: string;                    // Commit message
+}
+
 export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
     const router = getRouter?.() || getRouter!();
+    
+    // Add JSON body parser middleware
+    router.use(express.json());
 
     /**
      * POST /trigger-comment
@@ -236,10 +256,101 @@ export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
                 "POST /trigger-comment",
                 "POST /trigger-review",
                 "POST /trigger-structured-review",
+                "POST /commit-files",
                 "GET /health"
             ],
             timestamp: new Date().toISOString()
         });
+    });
+
+    /**
+     * POST /commit-files
+     * Commit multiple files atomically to a branch
+     * 
+     * This endpoint is used by the backend to commit generated files
+     * (like unit tests) directly to a PR branch.
+     * 
+     * Uses GitHub's Git Data API for atomic multi-file commits:
+     * - All files are committed in a single operation
+     * - If any file fails, the entire commit is rolled back
+     * - Only one commit appears in history
+     */
+    router.post("/commit-files", async (req: Request, res: Response) => {
+        try {
+            const {
+                owner,
+                repo,
+                branch,
+                installation_id,
+                files,
+                message,
+            } = req.body as CommitFilesRequest;
+
+            // Validate required fields
+            if (!owner || !repo || !branch || !installation_id || !files || !message) {
+                return res.status(400).json({
+                    error: "Missing required fields",
+                    required: ["owner", "repo", "branch", "installation_id", "files", "message"],
+                });
+            }
+
+            if (!Array.isArray(files) || files.length === 0) {
+                return res.status(400).json({
+                    error: "Files must be a non-empty array",
+                });
+            }
+
+            // Validate file structure
+            for (const file of files) {
+                if (!file.path || typeof file.content !== "string") {
+                    return res.status(400).json({
+                        error: "Each file must have 'path' (string) and 'content' (string)",
+                        invalidFile: file,
+                    });
+                }
+            }
+
+            app.log.info(`Committing ${files.length} files to ${owner}/${repo}@${branch}`);
+
+            // Authenticate using the installation ID
+            const octokit = await app.auth(Number(installation_id));
+
+            // Create the atomic multi-file commit
+            const result = await createMultiFileCommit(octokit, {
+                owner,
+                repo,
+                branch,
+                files,
+                message,
+            });
+
+            if (result.success) {
+                app.log.info(`Files committed successfully: ${result.sha}`);
+                
+                return res.status(200).json({
+                    success: true,
+                    sha: result.sha,
+                    commitUrl: result.commitUrl,
+                    filesCommitted: files.length,
+                    message: `Successfully committed ${files.length} file(s)`,
+                });
+            } else {
+                app.log.error(`Failed to commit files: ${result.error}`);
+                
+                return res.status(500).json({
+                    success: false,
+                    error: result.error,
+                });
+            }
+        } catch (err: any) {
+            app.log.error("Error committing files:", err);
+            
+            return res.status(err.status || 500).json({
+                success: false,
+                error: err.message,
+                details: err.response?.data || "Internal server error",
+            });
+        }
     });
 
     /**
@@ -384,5 +495,5 @@ export default (app: Probot, { getRouter }: ApplicationFunctionOptions) => {
         }
     });
 
-    app.log.info("Manual trigger endpoints registered: POST /trigger-comment, POST /trigger-review, POST /trigger-structured-review, GET /health");
+    app.log.info("Manual trigger endpoints registered: POST /trigger-comment, POST /trigger-review, POST /trigger-structured-review, POST /commit-files, GET /health");
 };

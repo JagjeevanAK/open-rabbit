@@ -36,6 +36,24 @@ class UnitTestRequest(BaseModel):
     comment_id: Optional[int] = Field(None, description="Comment ID that triggered the request")
 
 
+class PRUnitTestRequest(BaseModel):
+    """Request to generate unit tests for PR changed files and commit to branch"""
+    owner: str = Field(..., description="Repository owner (base repo)")
+    repo: str = Field(..., description="Repository name (base repo)")
+    pr_number: int = Field(..., description="Pull request number")
+    branch: str = Field(..., description="PR head branch to commit tests to")
+    base_branch: str = Field("main", description="Base branch for the PR")
+    head_owner: Optional[str] = Field(None, description="Head repo owner (for fork PRs)")
+    head_repo: Optional[str] = Field(None, description="Head repo name (for fork PRs)")
+    installation_id: int = Field(..., description="GitHub App installation ID")
+    target_files: List[str] = Field(..., description="Files to generate tests for")
+    changed_files: List[str] = Field(..., description="All changed files in the PR")
+    existing_test_files: List[str] = Field(default_factory=list, description="Existing test files to skip")
+    test_framework: str = Field("unknown", description="Detected test framework")
+    test_directory: Optional[str] = Field(None, description="Detected test directory pattern")
+    requested_by: Optional[str] = Field(None, description="GitHub user who requested tests")
+
+
 class TaskResponse(BaseModel):
     """Response for task creation"""
     task_id: str

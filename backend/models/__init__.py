@@ -7,6 +7,7 @@ Centralized Pydantic models for API requests/responses.
 from .bot import (
     ReviewRequest,
     UnitTestRequest,
+    PRUnitTestRequest,
     TaskResponse,
     TaskStatus,
     TaskListResponse,
@@ -23,7 +24,8 @@ from .feedback import (
 __all__ = [
     # Bot models
     "ReviewRequest",
-    "UnitTestRequest", 
+    "UnitTestRequest",
+    "PRUnitTestRequest",
     "TaskResponse",
     "TaskStatus",
     "TaskListResponse",
