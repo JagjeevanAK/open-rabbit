@@ -25,6 +25,14 @@ from .job_queue import (
     get_job_queue,
     reset_job_queue,
 )
+from .cache import (
+    TTLCache,
+    CacheEntry,
+    CacheStats,
+    get_search_cache,
+    get_package_cache,
+    reset_caches,
+)
 
 __all__ = [
     # KB Client
@@ -48,4 +56,11 @@ __all__ = [
     "JobPriority",
     "get_job_queue",
     "reset_job_queue",
+    # Cache
+    "TTLCache",
+    "CacheEntry",
+    "CacheStats",
+    "get_search_cache",
+    "get_package_cache",
+    "reset_caches",
 ]

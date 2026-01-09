@@ -9,6 +9,7 @@ Responsibilities:
 - Identify logical issues and bugs
 - Check style violations against KB conventions
 - Generate actionable review comments
+- Detect package changes and search for breaking changes/deprecations
 
 Constraints:
 - Does NOT generate unit tests
@@ -40,6 +41,12 @@ from ..logging_config import (
     log_with_data,
     log_llm_call,
 )
+from ..tools.package_intelligence import (
+    analyze_diff_for_packages,
+    build_package_context,
+    PackageIntelligenceResult,
+)
+from ..tools.web_search import get_all_search_tools
 
 logger = get_logger(__name__)
 
@@ -53,6 +60,7 @@ CODE_REVIEW_SYSTEM_PROMPT = """You are an expert code reviewer. Your task is to 
 - Identify anti-patterns and logical issues
 - Check for style violations based on provided conventions
 - Provide actionable, constructive feedback
+- Pay attention to package version changes and potential breaking changes
 
 ## Review Focus Areas
 1. **Security**: SQL injection, XSS, hardcoded secrets, insecure patterns
@@ -60,9 +68,13 @@ CODE_REVIEW_SYSTEM_PROMPT = """You are an expert code reviewer. Your task is to 
 3. **Performance**: N+1 queries, memory leaks, inefficient algorithms
 4. **Maintainability**: Complex code, poor naming, missing documentation
 5. **Style**: Violations of project conventions and best practices
+6. **Dependencies**: Breaking changes from package upgrades, deprecated APIs
 
 ## Knowledge Base Context
 {kb_context}
+
+## Package Intelligence
+{package_context}
 
 ## Parsed Code Structure
 {parsed_context}
@@ -97,6 +109,7 @@ IMPORTANT:
 - Be specific about line numbers
 - Provide actionable suggestions
 - Focus on the most impactful issues first
+- If package upgrades are detected, check for usage of deprecated APIs or breaking changes
 {valid_lines_instruction}"""
 
 
@@ -183,6 +196,9 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
         
         reviewable_files = [f for f in files if not f.is_deleted]
         
+        # Analyze files for package changes
+        package_context = self._build_package_context(files)
+        
         log_with_data(logger, 20, "Starting code review", {
             "session_id": session_id,
             "total_files": len(files),
@@ -190,11 +206,12 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
             "languages": list(set(f.language for f in reviewable_files if f.language)),
             "kb_context_size": len(kb_context.coding_style) + len(kb_context.conventions),
             "has_valid_lines": valid_lines is not None,
+            "has_package_context": bool(package_context),
         })
         
         # Review each file
         tasks = [
-            self._review_file(file_info, parsed_metadata, kb_context, valid_lines)
+            self._review_file(file_info, parsed_metadata, kb_context, valid_lines, package_context)
             for file_info in reviewable_files
         ]
         
@@ -216,8 +233,9 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
             
             files_reviewed += 1
             # Add issues from this file
-            for issue in result:
-                output.add_issue(issue)
+            if isinstance(result, list):
+                for issue in result:
+                    output.add_issue(issue)
         
         # Add KB learnings that were applied
         if not kb_context.is_empty():
@@ -245,6 +263,7 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
         parsed_metadata: ParserOutput,
         kb_context: KBContext,
         valid_lines: Optional[Dict[str, List[int]]] = None,
+        package_context: str = "",
     ) -> List[ReviewIssue]:
         """Review a single file.
         
@@ -254,6 +273,7 @@ class CodeReviewAgent(BaseAgent[ReviewOutput]):
             kb_context: Knowledge base context
             valid_lines: Dict mapping file path -> list of valid line numbers for comments.
                          If provided for this file, LLM will be instructed to only comment on those lines.
+            package_context: Package intelligence context about dependency changes
         """
         session_id = get_session_id() or "unknown"
         start_time = time.perf_counter()
@@ -291,6 +311,7 @@ DO NOT comment on any lines outside this list. If you find an issue on a line no
             # Build the review prompt
             system_prompt_formatted = CODE_REVIEW_SYSTEM_PROMPT.format(
                 kb_context=kb_text,
+                package_context=package_context if package_context else "No package changes detected.",
                 parsed_context=file_parsed,
                 valid_lines_instruction=valid_lines_instruction,
             )
@@ -422,6 +443,52 @@ Identify issues and respond with JSON only.""")
             return f"**Full Content:**\n```{file_info.language or ''}\n{content}\n```"
         else:
             return "No content available for review."
+    
+    def _build_package_context(self, files: List[FileInfo]) -> str:
+        """
+        Build package intelligence context from files.
+        
+        Analyzes dependency files (package.json, requirements.txt, pyproject.toml)
+        and source files for package changes and new imports.
+        
+        Args:
+            files: List of files to analyze
+            
+        Returns:
+            Package context string for the review prompt
+        """
+        all_version_changes = []
+        all_new_imports = []
+        
+        # Files that indicate package changes
+        package_files = {
+            "package.json",
+            "requirements.txt", 
+            "requirements-dev.txt",
+            "pyproject.toml",
+        }
+        
+        for file_info in files:
+            # Check if this is a package/dependency file
+            file_name = file_info.path.split("/")[-1]
+            
+            if file_name in package_files and file_info.diff:
+                try:
+                    result = analyze_diff_for_packages(file_info.diff, file_info.path)
+                    all_version_changes.extend(result.version_changes)
+                except Exception as e:
+                    logger.warning(f"Failed to analyze package file {file_info.path}: {e}")
+            
+            # Check source files for new imports
+            elif file_info.diff and file_info.path.endswith((".js", ".jsx", ".ts", ".tsx", ".py")):
+                try:
+                    result = analyze_diff_for_packages(file_info.diff, file_info.path)
+                    all_new_imports.extend(result.new_imports)
+                except Exception as e:
+                    logger.warning(f"Failed to analyze imports in {file_info.path}: {e}")
+        
+        # Build context string
+        return build_package_context(all_version_changes, all_new_imports)
     
     def _format_line_ranges(self, lines: List[int]) -> str:
         """
