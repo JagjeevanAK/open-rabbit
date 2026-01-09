@@ -49,13 +49,128 @@ Open Rabbit uses a multi-agent architecture for comprehensive code review:
 └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
 
+### Agent Workflow Sequence Diagram
+
+The following diagram illustrates the complete workflow when a pull request is reviewed:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GH as GitHub
+    participant Bot as Bot Service
+    participant API as Backend API
+    participant Sup as Supervisor Agent
+    participant KB as Knowledge Base
+    participant Sandbox as E2B Sandbox
+    participant Parser as Parser Agent
+    participant Review as Review Agent
+    participant Test as Unit Test Agent
+    participant Agg as Result Aggregator
+
+    %% PR Event Trigger
+    GH->>Bot: Webhook (PR opened/updated)
+    Bot->>Bot: Validate payload
+    Bot->>API: POST /review (ReviewRequest)
+    API->>Sup: run(request, session_id)
+
+    %% Intent Parsing
+    Sup->>Sup: Parse intent from request
+
+    %% Sandbox Setup
+    Sup->>Sandbox: Create isolated environment
+    Sandbox-->>Sup: sandbox_id, repo_path
+    Sup->>Sandbox: Clone repository
+    Sandbox-->>Sup: Clone complete
+
+    %% Knowledge Base Fetch
+    Sup->>KB: Fetch learnings for PR context
+    KB-->>Sup: KBContext (past learnings, patterns)
+
+    %% Parser Agent Execution
+    Sup->>Parser: Analyze files (with sandbox access)
+    Parser->>Sandbox: Read file contents
+    Sandbox-->>Parser: File data
+    Parser->>Parser: AST analysis
+    Parser->>Parser: Security scanning
+    Parser->>Parser: Complexity detection
+    Parser-->>Sup: ParserOutput (issues, metrics)
+
+    %% Review Agent Execution
+    Sup->>Review: Review code (with KB context)
+    Review->>Review: LLM-based review
+    Review->>Review: Apply KB learnings
+    Review-->>Sup: ReviewOutput (comments, suggestions)
+
+    %% Conditional: Unit Test Generation
+    alt Intent includes test generation
+        Sup->>Test: Generate unit tests
+        Test->>Sandbox: Analyze test coverage
+        Sandbox-->>Test: Coverage data
+        Test->>Test: Generate test code
+        Test-->>Sup: TestOutput (test files)
+    end
+
+    %% Result Aggregation
+    Sup->>Agg: Aggregate all results
+    Agg->>Agg: Merge parser findings
+    Agg->>Agg: Merge review comments
+    Agg->>Agg: Filter duplicates
+    Agg->>Agg: Prioritize issues
+    Agg-->>Sup: SupervisorOutput
+
+    %% Sandbox Cleanup
+    Sup->>Sandbox: Kill sandbox
+    Sandbox-->>Sup: Cleanup complete
+
+    %% Response Chain
+    Sup-->>API: SupervisorOutput
+    API-->>Bot: Review results
+    Bot->>GH: Post PR comments
+    Bot->>GH: Create review summary
+```
+
+### Feedback Learning Sequence
+
+When users react to review comments, Open Rabbit learns from the feedback:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as Developer
+    participant GH as GitHub
+    participant Bot as Bot Service
+    participant API as Backend API
+    participant Feedback as Feedback Agent
+    participant KB as Knowledge Base
+
+    User->>GH: React to comment (thumbs up/down)
+    GH->>Bot: Webhook (issue_comment reaction)
+    Bot->>API: POST /feedback
+
+    API->>Feedback: Process feedback
+    Feedback->>Feedback: Extract context
+    Feedback->>Feedback: Determine sentiment
+    Feedback->>Feedback: Generate learning
+
+    alt Positive feedback
+        Feedback->>KB: Store as positive pattern
+        KB-->>Feedback: Learning stored
+    else Negative feedback
+        Feedback->>KB: Store as anti-pattern
+        KB-->>Feedback: Learning stored
+    end
+
+    Feedback-->>API: FeedbackResult
+    API-->>Bot: Acknowledgment
+```
+
 ## Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose
 - Node.js 18+
-- Python 3.11+
+- Python 3.11+ & UV
 - GitHub App credentials
 
 ### 1. Clone the Repository
