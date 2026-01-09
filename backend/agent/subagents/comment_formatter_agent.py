@@ -375,6 +375,7 @@ The changes appear to follow good practices. Any potential issues identified wer
                     path=c.get("path", ""),
                     line=c.get("line", 1),
                     body=c.get("body", ""),
+                    side=c.get("side", "RIGHT"),
                     severity=c.get("severity", "medium"),
                     start_line=c.get("start_line"),
                     start_side=c.get("start_side"),
@@ -434,35 +435,65 @@ The changes appear to follow good practices. Any potential issues identified wer
         # Sort by severity priority
         sorted_comments = sorted(valid_comments, key=lambda c: c.priority)
         
-        # Merge comments on same file:line
-        merged = self._merge_comments(sorted_comments)
+        # Group comments by file:line (multiple comments on same line will be merged)
+        grouped = self._merge_comments(sorted_comments)
         
-        # Limit to max comments
-        limited_comments = merged[:formatter_input.max_comments]
-        dropped_due_to_limit = merged[formatter_input.max_comments:]
+        # Sort grouped items by highest severity in each group
+        sorted_groups = sorted(
+            grouped.items(),
+            key=lambda item: min(c.priority for c in item[1])
+        )
         
-        # Format inline comments
+        # Limit to max comment locations
+        limited_groups = sorted_groups[:formatter_input.max_comments]
+        dropped_groups = sorted_groups[formatter_input.max_comments:]
+        
+        # Count merged comments for stats
+        total_comments_in_limited = sum(len(comments) for _, comments in limited_groups)
+        merged_count = total_comments_in_limited - len(limited_groups)
+        
+        # Format inline comments (one per unique file:line location)
         inline_comments = []
-        for comment in limited_comments:
-            body = self._format_single_comment(comment)
+        for key, comments in limited_groups:
+            # Use the new merged formatting for multiple comments
+            body = self._format_merged_comments(comments)
+            
+            # Get the representative comment for line info (first one, sorted by priority)
+            rep_comment = comments[0]
+            
+            # For multi-line comments: start_line should be < line
+            # If end_line is provided and different from line, use line as start and end_line as the actual line
+            if rep_comment.end_line and rep_comment.end_line != rep_comment.line and rep_comment.end_line > rep_comment.line:
+                start_line = rep_comment.line
+                end_line = rep_comment.end_line
+            else:
+                start_line = None
+                end_line = rep_comment.line
+            
+            # Get highest severity from all merged comments
+            highest_severity = min(comments, key=lambda c: c.priority).severity
+            
             inline_comments.append(FormattedInlineComment(
-                path=comment.file,
-                line=comment.line,
+                path=rep_comment.file,
+                line=end_line,
                 body=body,
-                severity=comment.severity,
-                start_line=comment.end_line if comment.end_line and comment.end_line != comment.line else None,
+                side="RIGHT",  # Comment on new code side (new version)
+                severity=highest_severity,
+                start_line=start_line,
+                start_side="RIGHT" if start_line else None,
             ))
         
         # Build dropped list
         dropped_comments = list(already_dropped)
-        for comment in dropped_due_to_limit:
-            dropped_comments.append(DroppedComment(
-                file=comment.file,
-                line=comment.line,
-                severity=comment.severity,
-                message=comment.message[:100],
-                reason="limit_exceeded",
-            ))
+        for key, comments in dropped_groups:
+            for comment in comments:
+                dropped_comments.append(DroppedComment(
+                    file=comment.file,
+                    line=comment.line,
+                    severity=comment.severity,
+                    message=comment.message[:100],
+                    reason="limit_exceeded",
+                ))
         
         # Build summary
         summary_body = self._build_fallback_summary(
@@ -478,41 +509,85 @@ The changes appear to follow good practices. Any potential issues identified wer
             dropped_comments=dropped_comments,
             total_raw_comments=len(formatter_input.raw_comments),
             comments_on_valid_lines=len(valid_comments),
-            comments_merged=len(sorted_comments) - len(merged),
-            comments_limited=len(dropped_due_to_limit),
+            comments_merged=merged_count,
+            comments_limited=sum(len(comments) for _, comments in dropped_groups),
         )
     
     def _merge_comments(
         self,
         comments: List[RawReviewComment],
-    ) -> List[RawReviewComment]:
-        """Merge comments on the same file:line."""
+    ) -> Dict[str, List[RawReviewComment]]:
+        """
+        Group comments by file:line.
         
-        merged_map: Dict[str, RawReviewComment] = {}
+        Returns:
+            Dict mapping "file:line" to list of comments on that line
+        """
+        grouped: Dict[str, List[RawReviewComment]] = {}
         
         for comment in comments:
             key = f"{comment.file}:{comment.line}"
             
-            if key not in merged_map:
-                merged_map[key] = comment
-            else:
-                # Merge into existing
-                existing = merged_map[key]
-                
-                # Keep higher severity
-                if comment.priority < existing.priority:
-                    existing.severity = comment.severity
-                
-                # Combine messages
-                existing.message = f"{existing.message}\n\n---\n\n{comment.message}"
-                
-                # Keep any suggestion
-                if comment.suggestion and not existing.suggestion:
-                    existing.suggestion = comment.suggestion
-                if comment.suggested_code and not existing.suggested_code:
-                    existing.suggested_code = comment.suggested_code
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(comment)
         
-        return list(merged_map.values())
+        return grouped
+    
+    def _format_merged_comments(self, comments: List[RawReviewComment]) -> str:
+        """
+        Format multiple comments on the same line into a single rich comment.
+        
+        Uses collapsible <details> sections for each issue, similar to CodeRabbit/Greptile.
+        """
+        if len(comments) == 1:
+            # Single comment - use simple format
+            return self._format_single_comment(comments[0])
+        
+        # Multiple comments - use collapsible sections for each
+        parts = [
+            "**🛠️ Refactor suggestion / ⚠️ Potential issues**",
+            "",
+        ]
+        
+        for comment in comments:
+            sev_emoji = SEVERITY_EMOJI.get(comment.severity.lower(), "💬")
+            sev_label = SEVERITY_LABEL.get(comment.severity.lower(), "Issue")
+            cat_emoji = CATEGORY_EMOJI.get(comment.category.lower(), "💬") if comment.category else "💬"
+            cat_name = comment.category.replace("_", " ").title() if comment.category else "Issue"
+            
+            # Create collapsible section for each issue
+            summary_text = f"{sev_emoji} {sev_label}: {cat_name}"
+            if comment.message:
+                # Use first line or first 50 chars as summary preview
+                preview = comment.message.split('\n')[0][:50]
+                if len(preview) < len(comment.message.split('\n')[0]):
+                    preview += "..."
+                summary_text = f"{sev_emoji} {sev_label}: {preview}"
+            
+            parts.append("<details>")
+            parts.append(f"<summary>{summary_text}</summary>")
+            parts.append("")
+            parts.append(comment.message)
+            
+            # Add suggestion/code inside the details block
+            if comment.suggested_code:
+                parts.extend([
+                    "",
+                    "```suggestion",
+                    comment.suggested_code,
+                    "```",
+                ])
+            elif comment.suggestion:
+                parts.extend([
+                    "",
+                    f"**Suggestion:** {comment.suggestion}",
+                ])
+            
+            parts.append("</details>")
+            parts.append("")
+        
+        return "\n".join(parts)
     
     def _format_single_comment(self, comment: RawReviewComment) -> str:
         """Format a single comment with rich markdown."""

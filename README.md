@@ -33,9 +33,9 @@ Open Rabbit uses a multi-agent architecture for comprehensive code review:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    SUPERVISOR AGENT                          │
-│  - Orchestrates review pipeline                              │
-│  - Manages agent coordination                                │
+│                    SUPERVISOR AGENT                         │
+│  - Orchestrates review pipeline                             │
+│  - Manages agent coordination                               │
 │  - Aggregates and filters results                           │
 └─────────────────────────────────────────────────────────────┘
          │                    │                    │
