@@ -11,6 +11,9 @@ An open-source AI-powered code review system inspired by CodeRabbit. Open Rabbit
 - **Knowledge Base Integration**: Learns from user feedback to improve future reviews
 - **Multiple LLM Support**: Works with OpenAI, Anthropic Claude, and OpenRouter
 - **Static Analysis**: AST-based code parsing, security scanning, and complexity detection
+- **E2B Sandbox Execution**: Isolated cloud environments for secure code analysis
+- **Web Search / Package Intelligence**: Real-time search for breaking changes, deprecations, and CVEs
+- **Observability & Evaluations**: Langfuse tracing with LLM-as-a-Judge and custom evaluators
 - **GitHub Integration**: Seamless integration via GitHub App
 
 ## Architecture
@@ -60,18 +63,25 @@ sequenceDiagram
     participant Bot as Bot Service
     participant API as Backend API
     participant Sup as Supervisor Agent
+    participant LF as Langfuse
     participant KB as Knowledge Base
+    participant WebSearch as Web Search
     participant Sandbox as E2B Sandbox
     participant Parser as Parser Agent
     participant Review as Review Agent
     participant Test as Unit Test Agent
     participant Agg as Result Aggregator
+    participant Eval as Evaluators
 
     %% PR Event Trigger
     GH->>Bot: Webhook (PR opened/updated)
     Bot->>Bot: Validate payload
     Bot->>API: POST /review (ReviewRequest)
     API->>Sup: run(request, session_id)
+
+    %% Langfuse Trace Creation
+    Sup->>LF: Create trace (session, metadata)
+    LF-->>Sup: trace_id
 
     %% Intent Parsing
     Sup->>Sup: Parse intent from request
@@ -99,6 +109,8 @@ sequenceDiagram
     Sup->>Review: Review code (with KB context)
     Review->>Review: LLM-based review
     Review->>Review: Apply KB learnings
+    Review->>WebSearch: Check package breaking changes
+    WebSearch-->>Review: Package intelligence
     Review-->>Sup: ReviewOutput (comments, suggestions)
 
     %% Conditional: Unit Test Generation
@@ -118,9 +130,19 @@ sequenceDiagram
     Agg->>Agg: Prioritize issues
     Agg-->>Sup: SupervisorOutput
 
+    %% Quality Evaluation
+    Sup->>Eval: Run evaluators on output
+    Eval->>Eval: Response quality check
+    Eval->>Eval: Code review quality check
+    Eval->>LF: Log scores to trace
+    Eval-->>Sup: EvalScores
+
     %% Sandbox Cleanup
     Sup->>Sandbox: Kill sandbox
     Sandbox-->>Sup: Cleanup complete
+
+    %% Flush Traces
+    Sup->>LF: Flush trace data
 
     %% Response Chain
     Sup-->>API: SupervisorOutput
@@ -267,6 +289,16 @@ OPENAI_API_KEY=sk-...
 ELASTICSEARCH_URL=http://localhost:9200
 ```
 
+#### Langfuse (Optional - for observability)
+
+```bash
+# Add to backend/.env
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+LANGFUSE_ENABLED=true
+```
+
 ## Usage
 
 ### Automatic Reviews
@@ -324,9 +356,11 @@ open-rabbit/
 │   ├── agent/              # Multi-agent system
 │   │   ├── supervisor/     # Orchestration layer
 │   │   ├── subagents/      # Specialized agents
-│   │   ├── schemas/        # Pydantic models
+│   │   ├── evaluators/     # Quality evaluators (LLM-as-a-Judge + custom)
+│   │   ├── schemas/        # Agent-specific Pydantic models
 │   │   └── services/       # External integrations
 │   ├── db/                 # Database models & CRUD
+│   ├── schemas/            # Unified Pydantic schemas (API + DB)
 │   ├── routes/             # API endpoints
 │   └── services/           # Business logic
 ├── bot/                    # Probot GitHub App

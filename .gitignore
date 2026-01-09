@@ -12,7 +12,6 @@ test.txt
 
 # Test files
 *.db
-backend/test.db
 bot/test-output/
 comment-test.log
 
