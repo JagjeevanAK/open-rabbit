@@ -1,71 +1,152 @@
-# open-rabbit README
+# Open Rabbit VS Code Extension
 
-This is the README for your extension "open-rabbit". After writing up a brief description, we recommend including the following sections.
+AI-powered code review in your IDE, triggered automatically on git commits.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- **Automatic Review on Commit** - Detects git commits and automatically triggers AI code review
+- **Sidebar Panel** - Summary view showing review status, issue counts, and comment list
+- **Floating Changes Window** - Detailed view with file-by-file breakdown, inline comments, and suggestions
+- **Workspace-Scoped History** - Each project maintains its own review history
+- **Apply Suggestions** - One-click apply for code suggestions
 
-For example if there is an image subfolder under your extension project workspace:
+## Installation
 
-\!\[feature X\]\(images/feature-x.png\)
+### From Source
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/JagjeevanAK/open-rabbit.git
+   cd open-rabbit/vscode-extension
+   ```
+
+2. Install dependencies:
+   ```bash
+   pnpm install
+   ```
+
+3. Compile the extension:
+   ```bash
+   pnpm run compile
+   ```
+
+4. Press `F5` in VS Code to launch the Extension Development Host
+
+### From VSIX
+
+```bash
+code --install-extension open-rabbit-0.0.1.vsix
+```
+
+## Usage
+
+### Automatic Review
+
+1. Make changes to your code
+2. Commit your changes
+3. Open Rabbit will automatically trigger a review
+4. View results in the sidebar or floating window
+
+### Manual Review
+
+1. Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`)
+2. Run "Open Rabbit: Review Current Changes"
+
+### View Results
+
+- **Sidebar**: Click the rabbit icon in the activity bar
+- **Floating Window**: Run "Open Rabbit: Show Changes Window"
+
+## Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `openRabbit.backendUrl` | `http://localhost:8080` | Backend API URL |
+| `openRabbit.autoReviewOnCommit` | `true` | Auto-trigger review on commit |
+| `openRabbit.showFloatingWindow` | `true` | Show floating window after review |
+| `openRabbit.severityThreshold` | `info` | Minimum severity to display |
+| `openRabbit.pollingInterval` | `2000` | Status polling interval (ms) |
 
 ## Requirements
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+- VS Code 1.108.0 or higher
+- Git extension enabled
+- Open Rabbit backend running (see main README)
 
-## Extension Settings
+## Architecture
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+```
+┌─────────────────────────────────────────────────────────┐
+│                    VS Code Extension                    │
+├─────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
+│  │ Git Watcher │  │   Sidebar   │  │ Changes Panel   │  │
+│  │ (Commit     │  │  Provider   │  │ (Floating       │  │
+│  │  Detection) │  │  (WebView)  │  │  Window)        │  │
+│  └──────┬──────┘  └──────┬──────┘  └────────┬────────┘  │
+│         │                │                   │          │
+│         └────────────────┼───────────────────┘          │
+│                          │                              │
+│                   ┌──────┴──────┐                       │
+│                   │ API Client  │                       │
+│                   └──────┬──────┘                       │
+│                          │                              │
+│                   ┌──────┴──────┐                       │
+│                   │   State     │ (Workspace-scoped)    │
+│                   │  Manager    │                       │
+│                   └─────────────┘                       │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+              ┌────────────────────────┐
+              │   Open Rabbit Backend  │
+              │   (FastAPI + Agents)   │
+              └────────────────────────┘
+```
 
-For example:
+## Development
 
-This extension contributes the following settings:
+### Build
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+```bash
+pnpm run compile
+```
 
-## Known Issues
+### Watch Mode
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+```bash
+pnpm run watch
+```
 
-## Release Notes
+### Type Check
 
-Users appreciate release notes as you update your extension.
+```bash
+pnpm run check-types
+```
 
-### 1.0.0
+### Lint
 
-Initial release of ...
+```bash
+pnpm run lint
+```
 
-### 1.0.1
+## File Structure
 
-Fixed issue #.
+```
+src/
+├── extension.ts          # Main entry point
+├── types.ts              # TypeScript definitions
+├── api/
+│   └── apiClient.ts      # Backend API client
+├── git/
+│   └── gitWatcher.ts     # Git commit detection
+├── state/
+│   └── stateManager.ts   # Workspace-scoped state
+└── views/
+    ├── SidebarProvider.ts   # Sidebar webview
+    └── ChangesPanel.ts      # Floating panel
+```
 
-### 1.1.0
+## License
 
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+MIT
