@@ -1,23 +1,116 @@
 {
   "name": "open-rabbit",
-  "displayName": "open-rabbit",
-  "description": "Open-rabbit is a mordern AI code review in your IDE",
+  "displayName": "Open Rabbit",
+  "description": "AI-powered code review in your IDE - triggered on commits with floating window and sidebar summary",
   "version": "0.0.1",
+  "publisher": "open-rabbit",
   "engines": {
     "vscode": "^1.108.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Machine Learning",
+    "Programming Languages"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "code review",
+    "ai",
+    "git",
+    "commit",
+    "review"
+  ],
+  "icon": "resources/rabbit-icon.png",
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:.git"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "open-rabbit",
+          "title": "Open Rabbit",
+          "icon": "resources/rabbit.svg"
+        }
+      ]
+    },
+    "views": {
+      "open-rabbit": [
+        {
+          "type": "webview",
+          "id": "openRabbit.reviewPanel",
+          "name": "Code Review"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "open-rabbit.helloWorld",
-        "title": "Hello World"
+        "command": "openRabbit.triggerReview",
+        "title": "Open Rabbit: Review Current Changes",
+        "icon": "$(play)"
+      },
+      {
+        "command": "openRabbit.showChangesWindow",
+        "title": "Open Rabbit: Show Changes Window",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "openRabbit.refreshReview",
+        "title": "Open Rabbit: Refresh Review",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "openRabbit.openSettings",
+        "title": "Open Rabbit: Open Settings",
+        "icon": "$(settings-gear)"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "openRabbit.triggerReview",
+          "when": "view == openRabbit.reviewPanel",
+          "group": "navigation"
+        },
+        {
+          "command": "openRabbit.refreshReview",
+          "when": "view == openRabbit.reviewPanel",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Open Rabbit",
+      "properties": {
+        "openRabbit.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "Backend API URL for code review service"
+        },
+        "openRabbit.autoReviewOnCommit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically trigger code review when a commit is made"
+        },
+        "openRabbit.showFloatingWindow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show floating window with detailed changes after review completes"
+        },
+        "openRabbit.severityThreshold": {
+          "type": "string",
+          "enum": ["info", "warning", "error"],
+          "default": "info",
+          "description": "Minimum severity level for issues to display"
+        },
+        "openRabbit.pollingInterval": {
+          "type": "number",
+          "default": 2000,
+          "description": "Polling interval in milliseconds for checking review status"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "pnpm run package",
