@@ -2,7 +2,7 @@ services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: ../docker/backend.Dockerfile
     container_name: open-rabbit-backend
     restart: unless-stopped
     env_file:
@@ -24,7 +24,7 @@ services:
   bot:
     build:
       context: ./bot
-      dockerfile: Dockerfile
+      dockerfile: ../docker/bot.Dockerfile
     container_name: open-rabbit-bot
     restart: unless-stopped
     env_file:
