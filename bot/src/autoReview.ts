@@ -1,5 +1,6 @@
 import axios from "axios";
 import { Probot, Context } from "probot";
+import { isAuthorized, postUnauthorizedComment } from "./auth.js";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8080";
 
@@ -12,9 +13,6 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8080";
  * For manual reviews triggered by `/review` command, see manualReview.ts
  */
 
-/**
- * Request body for backend /bot/review endpoint
- */
 interface ReviewRequestBody {
     owner: string;
     repo: string;
@@ -36,6 +34,13 @@ export default (app: Probot) => {
             return;
         }
 
+        // Check authorization if AUTH_ENABLED=true
+        const prOwner = context.payload.repository.owner.login;
+        if (!await isAuthorized(prOwner, app)) {
+            await postUnauthorizedComment(context, prOwner);
+            return;
+        }
+
         app.log.info(`Processing PR ${owner}/${repo}#${pr.number} (installation: ${installationId})`);
 
         try {
@@ -50,7 +55,7 @@ export default (app: Probot) => {
 
             // Filter to only reviewable code files (skip deleted, binary, etc.)
             const reviewableExtensions = [
-                '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', 
+                '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go',
                 '.rs', '.rb', '.php', '.cs', '.cpp', '.c', '.h', '.hpp',
                 '.swift', '.kt', '.scala', '.vue', '.svelte'
             ];
@@ -59,9 +64,9 @@ export default (app: Probot) => {
                 .filter(file => {
                     // Skip deleted files
                     if (file.status === 'removed') return false;
-                    
+
                     // Only review code files
-                    return reviewableExtensions.some(ext => 
+                    return reviewableExtensions.some(ext =>
                         file.filename.toLowerCase().endsWith(ext)
                     );
                 })
@@ -97,7 +102,7 @@ export default (app: Probot) => {
 
         } catch (err: any) {
             app.log.error(`Error processing PR ${owner}/${repo}#${pr.number}: ${err.message}`);
-            
+
             if (axios.isAxiosError(err)) {
                 app.log.error(`Backend error: ${JSON.stringify(err.response?.data || 'No response')}`);
             }

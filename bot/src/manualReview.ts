@@ -1,5 +1,6 @@
 import { Probot } from "probot";
 import axios from "axios";
+import { isAuthorized } from "./auth.js";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8080";
 
@@ -12,7 +13,7 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8080";
 export default (app: Probot) => {
     app.on("issue_comment.created", async (context) => {
         const comment = context.payload.comment.body.trim();
-        
+
         // Only respond to /review command
         if (!comment.startsWith("/review")) {
             return;
@@ -37,12 +38,21 @@ export default (app: Probot) => {
             return;
         }
 
+        // Check authorization if AUTH_ENABLED=true
+        if (!await isAuthorized(owner, app)) {
+            await context.octokit.issues.createComment({
+                ...context.issue(),
+                body: `[Unauthorized]: Owner "${owner}" is not registered. Please register for Open Rabbit to use this bot.`
+            });
+            return;
+        }
+
         app.log.info(`Manual review requested for ${owner}/${repo}#${prNumber}`);
 
         // Post acknowledgment
         await context.octokit.issues.createComment({
             ...context.issue(),
-            body: "🔍 Starting code review...\n\nI'll analyze your changes and post my findings shortly."
+            body: "Starting code review...\n\nI'll analyze your changes and post my findings shortly."
         });
 
         try {
@@ -62,7 +72,7 @@ export default (app: Probot) => {
 
             // Filter to reviewable code files
             const reviewableExtensions = [
-                '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', 
+                '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go',
                 '.rs', '.rb', '.php', '.cs', '.cpp', '.c', '.h', '.hpp',
                 '.swift', '.kt', '.scala', '.vue', '.svelte'
             ];
@@ -70,7 +80,7 @@ export default (app: Probot) => {
             const changedFiles = files
                 .filter(file => {
                     if (file.status === 'removed') return false;
-                    return reviewableExtensions.some(ext => 
+                    return reviewableExtensions.some(ext =>
                         file.filename.toLowerCase().endsWith(ext)
                     );
                 })
@@ -79,8 +89,8 @@ export default (app: Probot) => {
             if (changedFiles.length === 0) {
                 await context.octokit.issues.createComment({
                     ...context.issue(),
-                    body: "No reviewable code files found in this PR. I can review files with these extensions: " + 
-                          reviewableExtensions.join(', ')
+                    body: "No reviewable code files found in this PR. I can review files with these extensions: " +
+                        reviewableExtensions.join(', ')
                 });
                 return;
             }
@@ -108,7 +118,7 @@ export default (app: Probot) => {
 
         } catch (error: any) {
             app.log.error(`Error triggering manual review: ${error.message}`);
-            
+
             let errorMessage = "An unexpected error occurred.";
             if (axios.isAxiosError(error)) {
                 errorMessage = error.response?.data?.detail || error.message;
@@ -116,7 +126,7 @@ export default (app: Probot) => {
 
             await context.octokit.issues.createComment({
                 ...context.issue(),
-                body: `❌ Failed to start code review.\n\n**Error:** ${errorMessage}\n\nPlease try again or check the bot logs.`
+                body: `Failed to start code review.\n\n**Error:** ${errorMessage}\n\nPlease try again or check the bot logs.`
             });
         }
     });

@@ -12,8 +12,12 @@ import feedbackHandler from "./feedbackHandler.js";
 import autoReview from "./autoReview.js";
 import manualReview from "./manualReview.js";
 import testMode from "./testMode.js";
+import auth from "./auth.js";
 
 export default (app: Probot, options: any) => {
+  // Load auth module (logs auth status)
+  auth(app);
+
   // Load manual trigger routes (HTTP endpoints for backend to post reviews)
   manualTrigger(app, options);
 
@@ -39,5 +43,5 @@ export default (app: Probot, options: any) => {
   // Enable with TEST_MODE=true and GITHUB_PAT env vars
   testMode(app, options);
 
-  app.log.info("Open Rabbit bot initialized with handlers: autoReview, manualReview, unitTest, unitTestMention, feedbackHandler, testMode");
+  app.log.info("Open Rabbit bot initialized with handlers: auth, autoReview, manualReview, unitTest, unitTestMention, feedbackHandler, testMode");
 };
