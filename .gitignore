@@ -18,3 +18,5 @@ comment-test.log
 # IDE
 .vscode/
 .idea/
+
+node_modules
