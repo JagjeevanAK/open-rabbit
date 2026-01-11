@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Github,
   ArrowRight,
+  TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -74,16 +75,6 @@ const features = [
     title: "Security Analysis",
     description: "Automatically scans for vulnerabilities, secrets, and security anti-patterns.",
   },
-  {
-    icon: Zap,
-    title: "Fast & Efficient",
-    description: "Reviews complete in seconds, not minutes. No waiting for human reviewers.",
-  },
-  {
-    icon: Github,
-    title: "GitHub Native",
-    description: "Seamlessly integrates with your existing GitHub workflow via GitHub App.",
-  },
 ];
 
 // How it works steps
@@ -115,21 +106,15 @@ export default function Home() {
     <div className="min-h-screen bg-background">
       {/* Navigation */}
       <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <nav className="container flex h-16 items-center justify-between px-4 md:px-8">
+        <nav className="container mx-auto flex h-16 items-center justify-between px-4 md:px-8">
           <Link href="/" className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-              <Rabbit className="h-5 w-5 text-primary-foreground" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary overflow-hidden">
+              <img src="/rabbit.svg" alt="Open Rabbit Logo" className="h-full w-full object-cover" />
             </div>
             <span className="text-xl font-bold">Open Rabbit</span>
           </Link>
 
           <div className="hidden md:flex items-center gap-8">
-            <Link href="/docs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Docs
-            </Link>
-            <Link href="https://github.com/JagjeevanAK/open-rabbit" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              GitHub
-            </Link>
           </div>
 
           <div className="flex items-center gap-3">
@@ -148,17 +133,17 @@ export default function Home() {
 
       <main>
         {/* Hero Section */}
-        <section className="relative overflow-hidden">
+        <section className="relative overflow-hidden h-screen flex flex-col items-center justify-center pb-20">
           {/* Background gradient */}
           <div className="absolute inset-0 -z-10">
             <div className="absolute top-1/4 left-1/2 -translate-x-1/2 h-[500px] w-[800px] rounded-full bg-primary/20 blur-[128px]" />
           </div>
 
-          <div className="container px-4 md:px-8 py-24 md:py-32">
+          <div className="container mx-auto px-4 md:px-8 py-24 md:py-32">
             <div className="mx-auto max-w-4xl text-center">
               {/* Badge */}
-              <Badge variant="secondary" className="mb-6 px-4 py-1.5">
-                <span className="mr-2">🚀</span>
+              <Badge variant="secondary" className="mb-4 px-4 py-1.5">
+                <TrendingUp className="mr-2 h-4 w-4" />
                 Open Source AI Code Review
               </Badge>
 
@@ -170,8 +155,7 @@ export default function Home() {
 
               {/* Subheadline */}
               <p className="text-lg md:text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-                AI-powered code reviews that learn from your feedback. Get actionable suggestions,
-                security analysis, and automated testing—all from your pull requests.
+                Codebase-aware Al Code Reviews in your pull requests and IDE
               </p>
 
               {/* Platform badges */}
@@ -216,7 +200,7 @@ export default function Home() {
 
         {/* Stats Section */}
         <section className="border-y border-border/40 bg-muted/30">
-          <div className="container px-4 md:px-8 py-16">
+          <div className="container mx-auto px-4 md:px-8 py-16">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
               {stats.map((stat, index) => (
                 <div key={index} className="text-center">
@@ -232,7 +216,7 @@ export default function Home() {
         </section>
 
         {/* Features Section */}
-        <section className="container px-4 md:px-8 py-24">
+        <section className="container mx-auto px-4 md:px-8 py-24">
           <div className="text-center mb-16">
             <h2 className="text-3xl md:text-4xl font-bold mb-4">
               Everything you need for better code reviews
@@ -243,25 +227,50 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {features.map((feature, index) => (
-              <div
-                key={index}
-                className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80"
-              >
-                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                  <feature.icon className="h-6 w-6" />
-                </div>
-                <h3 className="text-lg font-semibold mb-2">{feature.title}</h3>
-                <p className="text-sm text-muted-foreground">{feature.description}</p>
+          {/* Bento Grid Layout */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-[180px]">
+            {/* Large card - Automated PR Reviews (spans 2 cols, 2 rows) */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80 md:col-span-2 md:row-span-2">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                <GitPullRequest className="h-6 w-6" />
               </div>
-            ))}
+              <h3 className="text-xl font-semibold mb-3">{features[0].title}</h3>
+              <p className="text-muted-foreground">{features[0].description}</p>
+            </div>
+
+            {/* Medium card - Learns From Feedback */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80 lg:col-span-2">
+              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                <Brain className="h-5 w-5" />
+              </div>
+              <h3 className="text-lg font-semibold mb-2">{features[1].title}</h3>
+              <p className="text-sm text-muted-foreground">{features[1].description}</p>
+            </div>
+
+            {/* Small card - Multi-Language Support */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80">
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                <Code2 className="h-5 w-5" />
+              </div>
+              <h3 className="text-base font-semibold mb-1">{features[2].title}</h3>
+              <p className="text-xs text-muted-foreground line-clamp-2">{features[2].description}</p>
+            </div>
+
+            {/* Small card - Security Analysis */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80">
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                <Shield className="h-5 w-5" />
+              </div>
+              <h3 className="text-base font-semibold mb-1">{features[3].title}</h3>
+              <p className="text-xs text-muted-foreground line-clamp-2">{features[3].description}</p>
+            </div>
+
           </div>
         </section>
 
         {/* How It Works Section */}
         <section className="bg-muted/30 border-y border-border/40">
-          <div className="container px-4 md:px-8 py-24">
+          <div className="container mx-auto px-4 md:px-8 py-24">
             <div className="text-center mb-16">
               <h2 className="text-3xl md:text-4xl font-bold mb-4">
                 How Open Rabbit works
@@ -289,7 +298,7 @@ export default function Home() {
         </section>
 
         {/* IDE Section */}
-        <section className="container px-4 md:px-8 py-24">
+        <section className="container mx-auto px-4 md:px-8 py-24">
           <div className="text-center mb-12">
             <Badge variant="secondary" className="mb-4">Coming Soon</Badge>
             <h2 className="text-3xl md:text-4xl font-bold mb-4">
@@ -318,7 +327,7 @@ export default function Home() {
             <div className="absolute bottom-0 left-1/2 -translate-x-1/2 h-[400px] w-[600px] rounded-full bg-primary/20 blur-[128px]" />
           </div>
 
-          <div className="container px-4 md:px-8 py-24">
+          <div className="container mx-auto px-4 md:px-8 py-24">
             <div className="mx-auto max-w-3xl text-center">
               <h2 className="text-3xl md:text-4xl font-bold mb-4">
                 Ready to improve your code reviews?
@@ -333,11 +342,6 @@ export default function Home() {
                     <ArrowRight className="ml-2 h-5 w-5" />
                   </Link>
                 </Button>
-                <Button size="lg" variant="outline" className="h-12 px-8 text-base" asChild>
-                  <Link href="/docs">
-                    Read the Docs
-                  </Link>
-                </Button>
               </div>
             </div>
           </div>
@@ -346,20 +350,16 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="border-t border-border/40">
-        <div className="container px-4 md:px-8 py-12">
+        <div className="container mx-auto px-4 md:px-8 py-12">
           <div className="flex flex-col md:flex-row items-center justify-between gap-6">
             <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-                <Rabbit className="h-4 w-4 text-primary-foreground" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary overflow-hidden">
+                <img src="/rabbit.svg" alt="Open Rabbit Logo" className="h-full w-full object-cover" />
               </div>
               <span className="font-semibold">Open Rabbit</span>
             </div>
 
             <div className="flex items-center gap-6 text-sm text-muted-foreground">
-              <Link href="/docs" className="hover:text-foreground transition-colors">Docs</Link>
-              <Link href="https://github.com/JagjeevanAK/open-rabbit" className="hover:text-foreground transition-colors">GitHub</Link>
-              <Link href="/docs/privacy" className="hover:text-foreground transition-colors">Privacy</Link>
-              <Link href="/docs/terms" className="hover:text-foreground transition-colors">Terms</Link>
             </div>
 
             <div className="text-sm text-muted-foreground">

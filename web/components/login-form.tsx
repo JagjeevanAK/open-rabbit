@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Rabbit } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -75,8 +74,8 @@ export function LoginForm({
               href="/"
               className="flex flex-col items-center gap-2 font-medium"
             >
-              <div className="flex size-10 items-center justify-center rounded-md bg-primary text-primary-foreground">
-                <Rabbit className="size-6" />
+              <div className="flex size-10 items-center justify-center rounded-md bg-primary text-primary-foreground overflow-hidden">
+                <img src="/rabbit.svg" alt="Open Rabbit Logo" className="h-full w-full object-cover" />
               </div>
               <span className="sr-only">Open Rabbit</span>
             </a>

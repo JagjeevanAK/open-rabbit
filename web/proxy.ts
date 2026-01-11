@@ -1,20 +1,15 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// Routes that require authentication
 const protectedRoutes = ['/dashboard'];
 
-// Routes that should redirect to dashboard if already authenticated
 const authRoutes = ['/login', '/signup'];
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
     const { pathname } = request.nextUrl;
 
-    // Check for auth cookie/token (using localStorage isn't available in middleware)
-    // For now, we'll check for a simple cookie that gets set on login
     const isAuthenticated = request.cookies.get('open-rabbit-auth');
 
-    // Check if accessing protected route without auth
     const isProtectedRoute = protectedRoutes.some(route => pathname.startsWith(route));
 
     if (isProtectedRoute && !isAuthenticated) {
@@ -23,7 +18,6 @@ export function middleware(request: NextRequest) {
         return NextResponse.redirect(loginUrl);
     }
 
-    // Check if accessing auth routes while already authenticated
     const isAuthRoute = authRoutes.some(route => pathname.startsWith(route));
 
     if (isAuthRoute && isAuthenticated) {
