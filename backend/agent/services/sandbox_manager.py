@@ -2,7 +2,6 @@
 E2B Sandbox Manager
 
 Manages E2B sandbox lifecycle for code review sessions.
-One sandbox per review session, with automatic cleanup.
 
 Features:
 - Session-based sandbox management (one sandbox per session)
@@ -423,7 +422,7 @@ class SandboxManager:
         Raises:
             SandboxOperationError: If file read fails
         """
-        # E2B files.read returns string, we need to handle binary differently
+        # E2B files.read returns string, and binary are handled differently
         content = await self.read_file(session_id, file_path)
         return content.encode('utf-8')
     

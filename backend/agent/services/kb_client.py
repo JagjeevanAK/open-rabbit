@@ -186,7 +186,6 @@ class KBClient:
             except Exception as e:
                 logger.warning(f"Direct ES query failed, falling back to API: {e}")
         
-        # Fall back to KB API
         return await self._query_api(query, max_learnings)
     
     async def _query_elasticsearch(
@@ -291,7 +290,6 @@ class KBClient:
             "file": file,
         }
         
-        # Remove None values
         payload = {k: v for k, v in payload.items() if v is not None}
         
         for attempt in range(self.config.max_retries):

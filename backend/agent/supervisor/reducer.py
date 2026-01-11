@@ -1,6 +1,8 @@
 """
 Reducer Module
 
+IMP: Currently not using it but kept for future use if agent architecture changes.
+
 Merges and deduplicates review issues from multiple sources (Parser, Review agents).
 Handles:
 - Deduplication of similar issues
