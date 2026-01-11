@@ -22,9 +22,8 @@ import json
 import os
 import uuid
 import time
-from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Annotated, TypedDict, Sequence, Callable
+from typing import Any, Dict, List, Optional
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -58,6 +57,8 @@ from ..services.sandbox_manager import (
 )
 from .intent_parser import IntentParser
 from .result_aggregator import ResultAggregator
+from .config import SupervisorConfig
+from .state import SupervisorState
 
 # Import production logging
 from ..logging_config import (
@@ -84,74 +85,6 @@ from ..evaluators import run_all_evaluators
 
 setup_logging()
 logger = get_logger(__name__)
-
-
-@dataclass
-class SupervisorConfig:
-    """Configuration for the Supervisor Agent."""
-    # LLM settings
-    llm_provider: LLMProvider = LLMProvider.OPENAI
-    llm_model: Optional[str] = None
-    
-    # Knowledge Base settings
-    kb_url: Optional[str] = None
-    kb_enabled: bool = True
-    kb_elasticsearch_url: Optional[str] = None
-    
-    # E2B Sandbox settings
-    sandbox_enabled: bool = True  # Use E2B sandbox for isolation
-    sandbox_timeout_ms: int = 300_000  # 5 minutes
-    sandbox_template_id: Optional[str] = None  # Custom template or use default
-    
-    # Execution settings
-    timeout_seconds: float = 600.0  # 10 minutes total
-    max_retries: int = 3
-    
-    # Checkpointing - uses database for persistence
-    enable_checkpointing: bool = True
-    
-    # Mock mode for testing
-    use_mock_agents: bool = False
-
-
-# LangGraph State Definition
-class SupervisorState(TypedDict, total=False):
-    """State for the LangGraph supervisor workflow."""
-    # Input
-    request: Dict[str, Any]  # Serialized ReviewRequest
-    session_id: str
-    
-    # Parsed intent
-    intent: Dict[str, Any]  # Serialized UserIntent
-    
-    # Knowledge Base context
-    kb_context: Dict[str, Any]  # Serialized KBContext
-    
-    # Sandbox state
-    sandbox_repo_path: str  # Path to cloned repo inside sandbox
-    sandbox_active: bool    # Whether sandbox is active
-    
-    # Agent outputs
-    parser_output: Dict[str, Any]
-    review_output: Dict[str, Any]
-    test_output: Dict[str, Any]
-    
-    # Agent results with status
-    parser_result: Dict[str, Any]
-    review_result: Dict[str, Any]
-    test_result: Dict[str, Any]
-    
-    # Workflow control
-    current_step: str
-    completed_steps: List[str]
-    errors: List[str]
-    
-    # Final output
-    final_output: Dict[str, Any]
-    
-    # Timing
-    started_at: str
-    completed_at: str
 
 
 class SupervisorAgent:

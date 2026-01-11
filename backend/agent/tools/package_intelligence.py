@@ -23,7 +23,7 @@ from .web_search import (
     search_package_deprecations,
     search_new_package_apis,
     search_python_package_changes,
-    _is_search_enabled,
+    is_search_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -635,7 +635,7 @@ def get_package_upgrade_context(
     Returns:
         Comprehensive context about the package upgrade
     """
-    if not _is_search_enabled():
+    if not is_search_enabled():
         return f"Web search disabled. Unable to get context for {package_name} upgrade."
     
     sections: List[str] = []

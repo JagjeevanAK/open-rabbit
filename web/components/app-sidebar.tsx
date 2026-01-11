@@ -2,16 +2,13 @@
 
 import * as React from "react"
 import {
-  AudioWaveform,
+  Rabbit,
+  LayoutDashboard,
+  FolderGit2,
+  GitPullRequest,
+  Brain,
+  Settings,
   BookOpen,
-  Bot,
-  Command,
-  Frame,
-  GalleryVerticalEnd,
-  Map,
-  PieChart,
-  Settings2,
-  SquareTerminal,
 } from "lucide-react"
 
 import { NavMain } from "@/components/nav-main"
@@ -26,132 +23,109 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
-// This is sample data.
 const data = {
   user: {
-    name: "shadcn",
-    email: "m@example.com",
-    avatar: "/avatars/shadcn.jpg",
+    name: "User",
+    email: "user@example.com",
+    avatar: "/avatars/default.jpg",
   },
   teams: [
     {
-      name: "Acme Inc",
-      logo: GalleryVerticalEnd,
-      plan: "Enterprise",
-    },
-    {
-      name: "Acme Corp.",
-      logo: AudioWaveform,
-      plan: "Startup",
-    },
-    {
-      name: "Evil Corp.",
-      logo: Command,
-      plan: "Free",
+      name: "Open Rabbit",
+      logo: Rabbit,
+      plan: "Open Source",
     },
   ],
   navMain: [
     {
-      title: "Playground",
-      url: "#",
-      icon: SquareTerminal,
+      title: "Dashboard",
+      url: "/dashboard",
+      icon: LayoutDashboard,
       isActive: true,
+    },
+    {
+      title: "Repositories",
+      url: "/dashboard/repositories",
+      icon: FolderGit2,
       items: [
         {
-          title: "History",
-          url: "#",
+          title: "All Repos",
+          url: "/dashboard/repositories",
         },
         {
-          title: "Starred",
-          url: "#",
-        },
-        {
-          title: "Settings",
-          url: "#",
+          title: "Connect New",
+          url: "/dashboard/repositories/connect",
         },
       ],
     },
     {
-      title: "Models",
-      url: "#",
-      icon: Bot,
+      title: "Reviews",
+      url: "/dashboard/reviews",
+      icon: GitPullRequest,
       items: [
         {
-          title: "Genesis",
-          url: "#",
+          title: "Active",
+          url: "/dashboard/reviews?status=active",
         },
         {
-          title: "Explorer",
-          url: "#",
+          title: "Completed",
+          url: "/dashboard/reviews?status=completed",
         },
         {
-          title: "Quantum",
-          url: "#",
+          title: "History",
+          url: "/dashboard/reviews/history",
         },
       ],
+    },
+    {
+      title: "Knowledge Base",
+      url: "/dashboard/knowledge",
+      icon: Brain,
     },
     {
       title: "Documentation",
-      url: "#",
+      url: "/docs",
       icon: BookOpen,
       items: [
         {
-          title: "Introduction",
-          url: "#",
+          title: "Getting Started",
+          url: "/docs/getting-started",
         },
         {
-          title: "Get Started",
-          url: "#",
+          title: "GitHub App",
+          url: "/docs/github-app",
         },
         {
-          title: "Tutorials",
-          url: "#",
-        },
-        {
-          title: "Changelog",
-          url: "#",
+          title: "API Reference",
+          url: "/docs/api",
         },
       ],
     },
     {
       title: "Settings",
-      url: "#",
-      icon: Settings2,
+      url: "/dashboard/settings",
+      icon: Settings,
       items: [
         {
-          title: "General",
-          url: "#",
+          title: "Profile",
+          url: "/dashboard/settings/profile",
         },
         {
-          title: "Team",
-          url: "#",
+          title: "GitHub App",
+          url: "/dashboard/settings/github",
         },
         {
-          title: "Billing",
-          url: "#",
-        },
-        {
-          title: "Limits",
-          url: "#",
+          title: "API Keys",
+          url: "/dashboard/settings/api-keys",
         },
       ],
     },
   ],
   projects: [
     {
-      name: "Design Engineering",
-      url: "#",
-      icon: Frame,
-    },
-    {
-      name: "Sales & Marketing",
-      url: "#",
-      icon: PieChart,
-    },
-    {
-      name: "Travel",
-      url: "#",
-      icon: Map,
+      name: "Recent Reviews",
+      url: "/dashboard/reviews",
+      icon: GitPullRequest,
     },
   ],
 }

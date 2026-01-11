@@ -106,10 +106,6 @@ class PRReviewRequest(BaseModel):
     auto_post: bool = Field(True, description="Automatically post review comment to GitHub PR")
 
 
-
-
-
-
 class ReviewResponse(BaseModel):
     """Response model for review results"""
     task_id: str

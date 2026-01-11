@@ -35,7 +35,6 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 
 logger = logging.getLogger(__name__)
 
-# Models that require the Responses API
 CODEX_MODELS = [
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
@@ -73,14 +72,12 @@ class LLMConfig:
             self.extra_params = {}
 
 
-# Default models for each provider
 DEFAULT_MODELS = {
-    LLMProvider.OPENAI: "gpt-4-turbo-preview",
-    LLMProvider.ANTHROPIC: "claude-3-sonnet-20240229",
-    LLMProvider.OPENROUTER: "anthropic/claude-3-sonnet",
+    LLMProvider.OPENAI: "gpt-5.1-codex-max",
+    LLMProvider.ANTHROPIC: "claude-4.5-opus",
+    LLMProvider.OPENROUTER: "anthropic/claude-4.5-opus",
 }
 
-# Environment variable names for API keys
 API_KEY_ENV_VARS = {
     LLMProvider.OPENAI: "OPENAI_API_KEY",
     LLMProvider.ANTHROPIC: "ANTHROPIC_API_KEY",
@@ -131,7 +128,7 @@ class LLMFactory:
 
         # Use default model if not specified
         if model is None:
-            model = DEFAULT_MODELS.get(provider, "gpt-4-turbo-preview")
+            model = DEFAULT_MODELS.get(provider, "gpt-5.1-codex-max")
 
         # Get API key from environment if not provided
         if api_key is None:
@@ -242,7 +239,6 @@ class LLMFactory:
                 "Install it with: pip install langchain-openai"
             )
 
-        # OpenRouter base URL
         base_url = "https://openrouter.ai/api/v1"
 
         params = {
@@ -257,7 +253,6 @@ class LLMFactory:
         if config.max_tokens:
             params["max_tokens"] = config.max_tokens
 
-        # OpenRouter-specific headers
         default_headers = {
             "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "https://github.com/open-rabbit"),
             "X-Title": os.getenv("OPENROUTER_TITLE", "Open Rabbit Code Review"),
@@ -281,7 +276,7 @@ class LLMFactory:
         try:
             from langchain_openai import ChatOpenAI
             available.append(LLMProvider.OPENAI)
-            available.append(LLMProvider.OPENROUTER)  # Uses OpenAI client
+            available.append(LLMProvider.OPENROUTER)  
         except ImportError:
             pass
 
@@ -314,12 +309,10 @@ class LLMFactory:
             except ValueError:
                 return False, f"Unknown provider: {provider}"
 
-        # Check if provider package is installed
         available = LLMFactory.get_available_providers()
         if provider not in available:
             return False, f"Provider {provider.value} is not installed"
 
-        # Check for API key
         if api_key is None:
             env_var = API_KEY_ENV_VARS.get(provider)
             api_key = os.getenv(env_var) if env_var else None
@@ -333,7 +326,7 @@ class LLMFactory:
 
 # Convenience functions for common use cases
 def create_openai_llm(
-    model: str = "gpt-4-turbo-preview",
+    model: str = "gpt-5.1-codex-max",
     temperature: float = 0.2,
     **kwargs
 ) -> BaseChatModel:
@@ -342,7 +335,7 @@ def create_openai_llm(
 
 
 def create_anthropic_llm(
-    model: str = "claude-3-sonnet-20240229",
+    model: str = "claude-4.5-opus",
     temperature: float = 0.2,
     **kwargs
 ) -> BaseChatModel:
@@ -351,7 +344,7 @@ def create_anthropic_llm(
 
 
 def create_openrouter_llm(
-    model: str = "anthropic/claude-3-sonnet",
+    model: str = "anthropic/claude-4.5-opus",
     temperature: float = 0.2,
     **kwargs
 ) -> BaseChatModel:

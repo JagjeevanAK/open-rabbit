@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple, Set, TYPE_CHECKING
 from dataclasses import dataclass, field
 
-from agent.tools.token_utils import TokenCounter, count_tokens
+from .token_utils import TokenCounter, count_tokens
 
 if TYPE_CHECKING:
     from agent.services.sandbox_manager import SandboxManager
@@ -501,10 +501,8 @@ class SmartFileReader:
         ranges.append(LineRange(start=start, end=end))
         return ranges
     
-    # =========================================================================
+
     # Sandbox Support Methods
-    # =========================================================================
-    
     def read_content_with_line_numbers(
         self,
         content: str,
@@ -875,10 +873,7 @@ def read_files_for_review(
     return results
 
 
-# =========================================================================
 # Sandbox-Compatible Convenience Functions
-# =========================================================================
-
 def smart_read_content(
     content: str,
     file_path: str,

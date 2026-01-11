@@ -8,43 +8,51 @@ import tiktoken
 
 
 # Default encoding for various models
+# Note: tiktoken only supports OpenAI encodings, Claude models use cl100k as approximation
 MODEL_ENCODINGS = {
-    # OpenAI models
-    "gpt-4": "cl100k_base",
-    "gpt-4-turbo": "cl100k_base",
-    "gpt-4o": "o200k_base",
-    "gpt-4o-mini": "o200k_base",
-    "gpt-3.5-turbo": "cl100k_base",
-    # Anthropic models (approximate with cl100k)
-    "claude-3": "cl100k_base",
-    "claude-3-opus": "cl100k_base",
-    "claude-3-sonnet": "cl100k_base",
-    "claude-3-haiku": "cl100k_base",
-    "claude-3.5-sonnet": "cl100k_base",
+    # OpenAI GPT-5+ models
+    "gpt-5": "o200k_base",
+    # OpenAI Codex models
+    "gpt-5.1-codex": "o200k_base",
+    "gpt-5.1-codex-max": "o200k_base",
+    # OpenAI reasoning models (o-series)
+    "o4-mini": "o200k_base",
+    # Anthropic Claude 4 models
+    "claude-4-opus": "cl100k_base",
+    "claude-4-sonnet": "cl100k_base",
+    "claude-4-haiku": "cl100k_base",
+    "claude-4.5-opus": "cl100k_base",
+    "claude-4.5-sonnet": "cl100k_base",
+    "claude-4.5-haiku": "cl100k_base",
     # Default
-    "default": "cl100k_base",
+    "default": "o200k_base",
 }
 
-# Token limits for various models
+# Token limits (context window) for various models
 MODEL_TOKEN_LIMITS = {
-    "gpt-4": 8192,
-    "gpt-4-32k": 32768,
-    "gpt-4-turbo": 128000,
-    "gpt-4o": 128000,
-    "gpt-4o-mini": 128000,
-    "gpt-3.5-turbo": 16385,
-    "claude-3-opus": 200000,
-    "claude-3-sonnet": 200000,
-    "claude-3-haiku": 200000,
-    "claude-3.5-sonnet": 200000,
-    "default": 8192,
+    # OpenAI GPT-5+ models
+    "gpt-5": 400000,
+    # OpenAI Codex models
+    "gpt-5.1-codex": 400000,
+    "gpt-5.1-codex-max": 272000,
+    # OpenAI reasoning models (o-series)
+    "o4-mini": 200000,
+    # Anthropic Claude 4 models
+    "claude-4-opus": 200000,
+    "claude-4-sonnet": 200000,  # Can go up to 1M in beta
+    "claude-4-haiku": 200000,
+    "claude-4.5-opus": 200000,
+    "claude-4.5-sonnet": 200000,
+    "claude-4.5-haiku": 200000,
+    # Default
+    "default": 128000,
 }
 
 
 class TokenCounter:
     """Token counter using tiktoken for accurate token counting."""
     
-    def __init__(self, model: str = "gpt-4o"):
+    def __init__(self, model: str = "gpt-5"):
         """
         Initialize token counter for a specific model.
         
@@ -207,7 +215,7 @@ class TokenBudget:
     Useful for allocating tokens to different parts of a prompt.
     """
     
-    def __init__(self, total_budget: int, model: str = "gpt-4o"):
+    def __init__(self, total_budget: int, model: str = "gpt-5"):
         """
         Initialize token budget manager.
         
