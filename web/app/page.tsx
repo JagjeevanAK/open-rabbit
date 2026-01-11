@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import Dither from '@/components/Dither';
 
 // Platform icons as simple SVGs
 const GitHubIcon = () => (
@@ -56,24 +57,26 @@ const stats = [
 // Features data
 const features = [
   {
+    icon: Brain,
+    title: "Learns From Feedback",
+    description: "Open Rabbit learns from your reactions to improve suggestions over time. Accept or dismiss suggestions to fine-tune the AI to your team's coding style and preferences.",
+    highlights: ["Personalized suggestions", "Team-wide learning", "Continuous improvement"],
+  },
+  {
     icon: GitPullRequest,
     title: "Automated PR Reviews",
     description: "Get instant, comprehensive code reviews on every pull request with actionable feedback.",
-  },
-  {
-    icon: Brain,
-    title: "Learns From Feedback",
-    description: "Open Rabbit learns from your reactions to improve suggestions over time.",
-  },
-  {
-    icon: Code2,
-    title: "Multi-Language Support",
-    description: "Supports Python, JavaScript, TypeScript, Go, Rust, and many more languages.",
+    highlights: ["Inline code suggestions", "Architecture recommendations", "Best practices enforcement"],
   },
   {
     icon: Shield,
     title: "Security Analysis",
-    description: "Automatically scans for vulnerabilities, secrets, and security anti-patterns.",
+    description: "Automatically scans for vulnerabilities, hardcoded secrets, SQL injection, XSS, and 100+ security anti-patterns.",
+  },
+  {
+    icon: Code2,
+    title: "Multi-Language Support",
+    description: "Supports Python, JavaScript, TypeScript with framework-specific insights.",
   },
 ];
 
@@ -104,42 +107,53 @@ const steps = [
 export default function Home() {
   return (
     <div className="min-h-screen bg-background">
-      {/* Navigation */}
-      <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <nav className="container mx-auto flex h-16 items-center justify-between px-4 md:px-8">
+      {/* Floating Pill Navbar */}
+      <header className="fixed top-6 left-1/2 -translate-x-1/2 z-50">
+        <nav className="flex items-center justify-between gap-120 px-6 py-3 rounded-full bg-black/40 backdrop-blur-xl border border-white/10">
           <Link href="/" className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary overflow-hidden">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 overflow-hidden">
               <img src="/rabbit.svg" alt="Open Rabbit Logo" className="h-full w-full object-cover" />
             </div>
-            <span className="text-xl font-bold">Open Rabbit</span>
+            <span className="text-lg font-semibold text-white">Open Rabbit</span>
           </Link>
 
-          <div className="hidden md:flex items-center gap-8">
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/login">Sign in</Link>
-            </Button>
-            <Button size="sm" asChild>
-              <Link href="/signup">
-                Start Free
-                <ChevronRight className="ml-1 h-4 w-4" />
-              </Link>
-            </Button>
+          <div className="flex items-center gap-4">
+            <Link
+              href="/login"
+              className="text-sm text-white/80 hover:text-white transition-colors"
+            >
+              Sign in
+            </Link>
+            <Link
+              href="/signup"
+              className="px-4 py-2 bg-white text-black text-sm font-medium rounded-full hover:bg-white/90 transition-colors"
+            >
+              Start Free
+            </Link>
           </div>
         </nav>
       </header>
 
       <main>
         {/* Hero Section */}
-        <section className="relative overflow-hidden h-screen flex flex-col items-center justify-center pb-20">
-          {/* Background gradient */}
+        <section className="relative z-0 overflow-hidden h-screen flex flex-col items-center justify-center pb-20">
+          {/* Dither Background */}
           <div className="absolute inset-0 -z-10">
+            <Dither
+              waveColor={[0.5, 0.5, 0.5]}
+              disableAnimation={false}
+              enableMouseInteraction={true}
+              mouseRadius={0.3}
+              colorNum={4}
+              waveAmplitude={0.3}
+              waveFrequency={3}
+              waveSpeed={0.05}
+            />
+            {/* Overlay gradient */}
             <div className="absolute top-1/4 left-1/2 -translate-x-1/2 h-[500px] w-[800px] rounded-full bg-primary/20 blur-[128px]" />
           </div>
 
-          <div className="container mx-auto px-4 md:px-8 py-24 md:py-32">
+          <div className="container mx-auto px-4 md:px-8 py-24 md:py-32 relative z-10">
             <div className="mx-auto max-w-4xl text-center">
               {/* Badge */}
               <Badge variant="secondary" className="mb-4 px-4 py-1.5">
@@ -149,50 +163,29 @@ export default function Home() {
 
               {/* Headline */}
               <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold tracking-tight mb-6">
-                Ship high quality code.{" "}
+                Ship high quality code,{" "}
                 <span className="text-primary">Catch issues early.</span>
               </h1>
 
               {/* Subheadline */}
-              <p className="text-lg md:text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
+              <p className="text-lg md:text-xl text-foreground/80 mb-8 max-w-2xl mx-auto">
                 Codebase-aware Al Code Reviews in your pull requests and IDE
               </p>
 
-              {/* Platform badges */}
-              <div className="flex flex-wrap items-center justify-center gap-4 mb-10 text-muted-foreground">
-                <span className="text-sm">Available in</span>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-1.5 text-sm">
-                    <GitHubIcon />
-                    <span>GitHub</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm opacity-50">
-                    <GitLabIcon />
-                    <span>GitLab</span>
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">Soon</Badge>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm opacity-50">
-                    <BitbucketIcon />
-                    <span>Bitbucket</span>
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">Soon</Badge>
-                  </div>
-                </div>
-              </div>
-
               {/* CTA Buttons */}
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                <Button size="lg" className="h-12 px-8 text-base" asChild>
-                  <Link href="/signup">
-                    Start Free
-                    <ArrowRight className="ml-2 h-5 w-5" />
-                  </Link>
-                </Button>
-                <Button size="lg" variant="outline" className="h-12 px-8 text-base" asChild>
-                  <Link href="https://github.com/JagjeevanAK/open-rabbit">
-                    <Github className="mr-2 h-5 w-5" />
-                    View on GitHub
-                  </Link>
-                </Button>
+              <div className="flex items-center justify-center gap-4">
+                <Link
+                  href="/signup"
+                  className="px-8 py-3 bg-white text-black font-medium rounded-full hover:bg-white/90 transition-colors"
+                >
+                  Get Started
+                </Link>
+                <Link
+                  href="https://github.com/JagjeevanAK/open-rabbit"
+                  className="px-8 py-3 border border-white/30 text-white/80 font-medium rounded-full hover:bg-white/10 hover:text-white transition-colors"
+                >
+                  View on GitHub
+                </Link>
               </div>
             </div>
           </div>
@@ -229,37 +222,51 @@ export default function Home() {
 
           {/* Bento Grid Layout */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-[180px]">
-            {/* Large card - Automated PR Reviews (spans 2 cols, 2 rows) */}
+            {/* Large card - Learns From Feedback (spans 2 cols, 2 rows) */}
             <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80 md:col-span-2 md:row-span-2">
               <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                <GitPullRequest className="h-6 w-6" />
+                <Brain className="h-6 w-6" />
               </div>
               <h3 className="text-xl font-semibold mb-3">{features[0].title}</h3>
-              <p className="text-muted-foreground">{features[0].description}</p>
+              <p className="text-muted-foreground mb-4">{features[0].description}</p>
+              <div className="flex flex-wrap gap-2">
+                {features[0].highlights?.map((highlight, i) => (
+                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+                    {highlight}
+                  </span>
+                ))}
+              </div>
             </div>
 
-            {/* Medium card - Learns From Feedback */}
+            {/* Medium card - Automated PR Reviews (spans 2 cols) */}
             <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80 lg:col-span-2">
-              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                <Brain className="h-5 w-5" />
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                <GitPullRequest className="h-5 w-5" />
               </div>
               <h3 className="text-lg font-semibold mb-2">{features[1].title}</h3>
-              <p className="text-sm text-muted-foreground">{features[1].description}</p>
-            </div>
-
-            {/* Small card - Multi-Language Support */}
-            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80">
-              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                <Code2 className="h-5 w-5" />
+              <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{features[1].description}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {features[1].highlights?.map((highlight, i) => (
+                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                    {highlight}
+                  </span>
+                ))}
               </div>
-              <h3 className="text-base font-semibold mb-1">{features[2].title}</h3>
-              <p className="text-xs text-muted-foreground line-clamp-2">{features[2].description}</p>
             </div>
 
             {/* Small card - Security Analysis */}
             <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80">
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
                 <Shield className="h-5 w-5" />
+              </div>
+              <h3 className="text-base font-semibold mb-1">{features[2].title}</h3>
+              <p className="text-xs text-muted-foreground line-clamp-2">{features[2].description}</p>
+            </div>
+
+            {/* Small card - Multi-Language Support */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80">
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                <Code2 className="h-5 w-5" />
               </div>
               <h3 className="text-base font-semibold mb-1">{features[3].title}</h3>
               <p className="text-xs text-muted-foreground line-clamp-2">{features[3].description}</p>
@@ -349,22 +356,100 @@ export default function Home() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-border/40">
-        <div className="container mx-auto px-4 md:px-8 py-12">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary overflow-hidden">
-                <img src="/rabbit.svg" alt="Open Rabbit Logo" className="h-full w-full object-cover" />
+      <footer className="border-t border-border/40 bg-muted/10">
+        <div className="container mx-auto px-12 md:px-24 lg:px-32 py-12">
+          {/* Main Footer Content */}
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-12">
+            {/* Brand Column */}
+            <div className="shrink-0">
+              <Link href="/" className="flex items-center gap-2">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary overflow-hidden">
+                  <img src="/rabbit.svg" alt="Open Rabbit Logo" className="h-full w-full object-cover" />
+                </div>
+                <span className="font-bold text-xl">Open Rabbit</span>
+              </Link>
+            </div>
+
+            {/* Link Columns - Flex with consistent gaps */}
+            <div className="flex flex-wrap gap-20 lg:gap-28">
+              {/* Community Column */}
+              <div>
+                <h4 className="text-sm font-medium text-muted-foreground mb-4">Community</h4>
+                <ul className="space-y-3 text-sm">
+                  <li>
+                    <Link href="#" className="flex items-center gap-2 text-foreground hover:text-primary transition-colors">
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" /></svg>
+                      Become a member
+                    </Link>
+                  </li>
+                  <li>
+                    <Link href="#" className="flex items-center gap-2 text-foreground hover:text-primary transition-colors">
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" /></svg>
+                      YouTube
+                    </Link>
+                  </li>
+                  <li>
+                    <Link href="#" className="flex items-center gap-2 text-foreground hover:text-primary transition-colors">
+                      <Github className="h-4 w-4" />
+                      GitHub
+                    </Link>
+                  </li>
+                  <li>
+                    <Link href="#" className="flex items-center gap-2 text-foreground hover:text-primary transition-colors">
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" /></svg>
+                      LinkedIn
+                    </Link>
+                  </li>
+                  <li>
+                    <Link href="#" className="flex items-center gap-2 text-foreground hover:text-primary transition-colors">
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" /></svg>
+                      Twitter / X
+                    </Link>
+                  </li>
+                </ul>
               </div>
-              <span className="font-semibold">Open Rabbit</span>
-            </div>
 
-            <div className="flex items-center gap-6 text-sm text-muted-foreground">
-            </div>
+              {/* Company Column */}
+              <div>
+                <h4 className="text-sm font-medium text-muted-foreground mb-4">Company</h4>
+                <ul className="space-y-3 text-sm">
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">About us</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Careers</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Contact</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Press</Link></li>
+                </ul>
+              </div>
 
-            <div className="text-sm text-muted-foreground">
-              © 2025 Open Rabbit. Open Source.
+              {/* Products Column */}
+              <div>
+                <h4 className="text-sm font-medium text-muted-foreground mb-4">Products</h4>
+                <ul className="space-y-3 text-sm">
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">AI Code Reviews in Git</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">AI Code Reviews in IDE</Link></li>
+                </ul>
+              </div>
+
+              {/* Resources Column */}
+              <div>
+                <h4 className="text-sm font-medium text-muted-foreground mb-4">Resources</h4>
+                <ul className="space-y-3 text-sm">
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Documentation</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Status</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Blog</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Changelog</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Compare AI tools</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Security</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Trust Center</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Terms of Use</Link></li>
+                  <li><Link href="#" className="text-foreground hover:text-primary transition-colors">Privacy Statement</Link></li>
+                </ul>
+              </div>
             </div>
+          </div>
+
+          {/* Bottom Copyright */}
+          <div className="mt-12 pt-8 border-t border-border/40 text-sm text-muted-foreground">
+            © 2025 Open Rabbit. All rights reserved.
           </div>
         </div>
       </footer>
