@@ -1,8 +1,9 @@
-from . import user, events, feedback, bot_webhook
+"""Routes package - API endpoint handlers."""
+from . import user, events, feedback, bot
 
 available_routers = [
     user.router,
     events.router,
     feedback.router,
-    bot_webhook.router,
+    bot.router,
 ]
