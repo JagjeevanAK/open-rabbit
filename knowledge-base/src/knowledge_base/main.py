@@ -5,8 +5,10 @@ This module provides functions to query stored learnings.
 
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_elasticsearch import ElasticsearchStore
-from langchain.chains import RetrievalQA
-from config import settings
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from .config import settings
 
 
 def create_retriever():
@@ -35,19 +37,29 @@ def query_knowledge_base(query: str) -> str:
     retriever = create_retriever()
     llm = ChatOpenAI(model=settings.openai_chat_model, temperature=0.2)
     
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=retriever,
-        chain_type="stuff"
+    prompt = ChatPromptTemplate.from_template(
+        """Answer the question based only on the following context:
+
+{context}
+
+Question: {question}
+"""
     )
     
-    response = qa_chain.invoke({"query": query})
-    return response["result"]
-
-
-# if __name__ == "__main__":
-#     query = "Why does the Zero project prefer Dependabot for dependency updates?"
-#     response = query_knowledge_base(query)
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
     
-#     print(f"\nQuery: {query}")
-#     print(f"AI Response: {response}")
+    chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    return chain.invoke(query)
+
+
+if __name__ == "__main__":
+    query = "Why does the Zero project prefer Dependabot for dependency updates?"
+    response = query_knowledge_base(query)
+    print(response)

@@ -1,7 +1,7 @@
-from celery_app import celery_app
+from .celery_app import celery_app
 from langchain_openai import OpenAIEmbeddings
 from elasticsearch import Elasticsearch
-from config import settings
+from .config import settings
 
 
 @celery_app.task(name="tasks.process_learning")

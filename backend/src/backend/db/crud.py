@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 import json
 from . import models
-import schemas
+from .. import schemas
 
 def get_user(db: Session, user_name: str):
     return db.query(models.User).filter(models.User.name == user_name).first()

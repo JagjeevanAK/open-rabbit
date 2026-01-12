@@ -9,16 +9,21 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-COPY agent /app/agent
+COPY pyproject.toml uv.lock ./
 
-COPY backend/pyproject.toml backend/uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
 
-COPY backend/ .
+COPY agent/pyproject.toml agent/README.md ./agent/
+COPY agent/src ./agent/src
 
+COPY backend/pyproject.toml backend/README.md ./backend/
+COPY backend/src ./backend/src
+COPY backend/alembic ./backend/alembic
+COPY backend/alembic.ini ./backend/
+
+# Sync all workspace dependencies
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+WORKDIR /app/backend
 
+CMD ["uv", "run", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

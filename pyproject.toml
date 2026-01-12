@@ -1,0 +1,26 @@
+[project]
+name = "open-rabbit"
+version = "0.1.0"
+description = "AI-powered code review system"
+requires-python = ">=3.13"
+dependencies = [
+    "open-rabbit-agent",
+    "open-rabbit-backend",
+    "open-rabbit-knowledge-base",
+]
+
+[tool.uv.workspace]
+members = ["agent", "backend", "knowledge-base"]
+
+[tool.uv.sources]
+open-rabbit-agent = { workspace = true }
+open-rabbit-backend = { workspace = true }
+open-rabbit-knowledge-base = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+]

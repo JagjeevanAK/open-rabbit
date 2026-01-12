@@ -35,7 +35,7 @@ from agent.subagents.comment_formatter_agent import CommentFormatterAgent
 from agent.subagents.unit_test_agent import UnitTestAgent
 from agent.subagents.parser_agent import ParserAgent
 from agent.schemas.common import KBContext
-from schemas import (
+from ..schemas import (
     ReviewRequest,
     UnitTestRequest,
     PRUnitTestRequest,
@@ -44,7 +44,7 @@ from schemas import (
     TaskListResponse,
     HealthResponse
 )
-from services.github_comment_service import GitHubCommentService
+from ..services.github_comment_service import GitHubCommentService
 
 # Initialize production logging
 setup_logging()

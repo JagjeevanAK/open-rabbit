@@ -1,5 +1,5 @@
 [project]
-name = "backend"
+name = "open-rabbit-backend"
 version = "0.1.0"
 description = "Open Rabbit Backend API Server"
 readme = "README.md"
@@ -27,12 +27,21 @@ dependencies = [
     "opentelemetry-instrumentation>=0.58b0",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/backend"]
+
+[project.scripts]
+backend = "backend.main:main"
+
 [tool.uv.sources]
-open-rabbit-agent = { path = "../agent", editable = true }
+open-rabbit-agent = { workspace = true }
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
-

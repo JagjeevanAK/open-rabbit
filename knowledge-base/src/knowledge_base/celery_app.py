@@ -1,5 +1,5 @@
 from celery import Celery
-from config import settings
+from .config import settings
 
 celery_app = Celery(
     "knowledge_base",

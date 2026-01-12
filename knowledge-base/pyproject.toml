@@ -1,5 +1,5 @@
 [project]
-name = "knowledge-base"
+name = "open-rabbit-knowledge-base"
 version = "0.1.0"
 description = "A structured knowledge base for storing and retrieving code learnings"
 readme = "README.md"
@@ -15,4 +15,21 @@ dependencies = [
     "requests>=2.32.0",
     "flower>=2.0.0",
     "langchain>=0.3.27",
+    "elasticsearch>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knowledge_base"]
+
+[project.scripts]
+knowledge-base = "knowledge_base.app:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
 ]

@@ -2,8 +2,8 @@ from dotenv import load_dotenv
 load_dotenv()  # Load .env file before other imports
 
 from fastapi import FastAPI
-from db.database import engine, Base
-from routes import available_routers
+from .db.database import engine, Base
+from .routes import available_routers
 from pydantic import BaseModel
 from typing import Optional
 

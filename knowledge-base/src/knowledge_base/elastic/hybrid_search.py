@@ -1,9 +1,5 @@
 from elasticsearch import Elasticsearch
-import sys
-from pathlib import Path
-
-sys.path.append(str(Path(__file__).parent.parent))
-from config import settings
+from ..config import settings
 
 
 def init_index():

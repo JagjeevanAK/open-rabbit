@@ -2,8 +2,8 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
-from tasks import process_learning
-from config import settings
+from .tasks import process_learning
+from .config import settings
 from elasticsearch import Elasticsearch
 from langchain_openai import OpenAIEmbeddings
 

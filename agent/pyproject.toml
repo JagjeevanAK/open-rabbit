@@ -33,42 +33,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = [
-    "__init__.py",
-    "llm_factory.py",
-    "langfuse_integration.py",
-    "logging_config.py",
-    "evaluators",
-    "parsers",
-    "prompt",
-    "schemas",
-    "services",
-    "subagents",
-    "supervisor",
-    "tools",
-    "utils",
-]
-
-[tool.hatch.build.targets.wheel.force-include]
-"__init__.py" = "agent/__init__.py"
-"llm_factory.py" = "agent/llm_factory.py"
-"langfuse_integration.py" = "agent/langfuse_integration.py"
-"logging_config.py" = "agent/logging_config.py"
-"evaluators" = "agent/evaluators"
-"parsers" = "agent/parsers"
-"prompt" = "agent/prompt"
-"schemas" = "agent/schemas"
-"services" = "agent/services"
-"subagents" = "agent/subagents"
-"supervisor" = "agent/supervisor"
-"tools" = "agent/tools"
-"utils" = "agent/utils"
-
-
+packages = ["src/agent"]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
-

@@ -33,7 +33,7 @@ install-kb: ## Install knowledge-base dependencies (uv)
 	cd knowledge-base && uv sync
 
 dev-backend: ## Run backend dev server
-	cd backend && uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+	cd backend && uv run uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 dev-bot: ## Run bot dev server
 	cd bot && npm run dev
@@ -42,7 +42,7 @@ dev-web: ## Run web dev server
 	cd web && bun run dev
 
 dev-kb: ## Run knowledge-base dev server
-	cd knowledge-base && uv run python main.py
+	cd knowledge-base && uv run uvicorn knowledge_base.app:app --reload --host 0.0.0.0 --port 8001
 
 build: build-backend build-bot build-web ## Build all projects
 
