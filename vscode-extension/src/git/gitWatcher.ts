@@ -1,14 +1,6 @@
-/**
- * Git Watcher
- * 
- * Monitors Git repository state and detects commits.
- * Uses VS Code's built-in Git extension API.
- */
-
 import * as vscode from 'vscode';
 import { FileChange, GitRepository, GitCommit } from '../types';
 
-// Git extension types (from vscode.git)
 interface GitExtension {
     getAPI(version: number): GitAPI;
 }
@@ -60,7 +52,7 @@ interface Change {
     uri: vscode.Uri;
     originalUri: vscode.Uri;
     renameUri?: vscode.Uri;
-    status: number; // 0-7: Modified, Added, Deleted, Renamed, etc.
+    status: number;
 }
 
 interface Commit {
@@ -129,7 +121,6 @@ export class GitWatcher implements vscode.Disposable {
             return;
         }
 
-        // New commit detected
         const previousHash = this.lastCommitHash;
         this.lastCommitHash = currentHash;
 
@@ -180,7 +171,6 @@ export class GitWatcher implements vscode.Disposable {
 
             return files;
         } catch {
-            // Fallback: return empty array
             return [];
         }
     }
@@ -204,16 +194,12 @@ export class GitWatcher implements vscode.Disposable {
         this._onDidChangeRepository.fire(null);
     }
 
-    /**
-     * Get the active repository (first one if multiple)
-     */
+    // Get active repo
     getActiveRepository(): Repository | undefined {
         return this.gitApi?.repositories[0];
     }
 
-    /**
-     * Get current repository info
-     */
+    // Get current repo info
     getCurrentRepository(): GitRepository | null {
         const repo = this.getActiveRepository();
         if (!repo) {
@@ -234,9 +220,7 @@ export class GitWatcher implements vscode.Disposable {
         };
     }
 
-    /**
-     * Get uncommitted changes (working tree + staged)
-     */
+    // Get uncommitted changes (working tree + staged)
     async getUncommittedChanges(): Promise<FileChange[]> {
         const repo = this.getActiveRepository();
         if (!repo) {
@@ -269,9 +253,7 @@ export class GitWatcher implements vscode.Disposable {
         });
     }
 
-    /**
-     * Get the diff for uncommitted changes
-     */
+    // Get the diff for uncommitted changes (staged and unstaged)
     async getUncommittedDiff(): Promise<string> {
         const repo = this.getActiveRepository();
         if (!repo) {
@@ -279,7 +261,6 @@ export class GitWatcher implements vscode.Disposable {
         }
 
         try {
-            // Get both staged and unstaged diff
             const stagedDiff = await repo.diff(true);
             const unstagedDiff = await repo.diff(false);
             return `${stagedDiff}\n${unstagedDiff}`;
@@ -289,32 +270,32 @@ export class GitWatcher implements vscode.Disposable {
     }
 
     private mapChangeStatus(status: number): FileChange['status'] {
-        // Git status codes: 0=Index Modified, 1=Index Added, 2=Index Deleted, etc.
+        // Git status codes: 
+        // 0 = Index Modified, 
+        // 3 = Index Renamed, 
+        // 1,5 = Index Added, 
+        // 2,6 = Index Deleted, etc.
         switch (status) {
-            case 1: // Added
-            case 5: // Index Added
+            case 1: 
+            case 5: 
                 return 'added';
-            case 2: // Deleted
-            case 6: // Index Deleted
+            case 2: 
+            case 6: 
                 return 'deleted';
-            case 3: // Renamed
+            case 3: 
                 return 'renamed';
             default:
                 return 'modified';
         }
     }
 
-    /**
-     * Get the current branch name
-     */
+    // current branch name
     getCurrentBranch(): string | null {
         const repo = this.getActiveRepository();
         return repo?.state.HEAD?.name || null;
     }
 
-    /**
-     * Get the last commit hash
-     */
+    // last commit hash
     getLastCommitHash(): string | null {
         return this.lastCommitHash;
     }
@@ -326,7 +307,6 @@ export class GitWatcher implements vscode.Disposable {
     }
 }
 
-// Singleton instance
 let gitWatcherInstance: GitWatcher | null = null;
 
 export function getGitWatcher(): GitWatcher {

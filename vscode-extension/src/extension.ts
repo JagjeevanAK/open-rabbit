@@ -25,11 +25,9 @@ let sidebarProvider: SidebarProvider;
 export async function activate(context: vscode.ExtensionContext) {
 	console.log('Open Rabbit extension is activating...');
 
-	// Initialize state manager (workspace-scoped)
 	stateManager = initializeStateManager(context);
 	console.log(`Workspace: ${stateManager.getWorkspaceId()}`);
 
-	// Initialize sidebar provider
 	sidebarProvider = new SidebarProvider(context.extensionUri);
 
 	context.subscriptions.push(
@@ -39,7 +37,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		)
 	);
 
-	// Handle sidebar events
 	context.subscriptions.push(
 		sidebarProvider.onTriggerReview(() => triggerReview()),
 		sidebarProvider.onShowChanges(() => showChangesPanel()),
@@ -47,18 +44,15 @@ export async function activate(context: vscode.ExtensionContext) {
 		sidebarProvider.onOpenFile(({ file, line }) => openFileAtLine(file, line))
 	);
 
-	// Initialize Git watcher
 	gitWatcher = getGitWatcher();
 	const gitInitialized = await gitWatcher.initialize();
 
 	if (gitInitialized) {
-		// Listen for commits
 		context.subscriptions.push(
 			gitWatcher.onDidCommit((commit) => handleCommit(commit))
 		);
 	}
 
-	// Create status bar item
 	statusBarItem = vscode.window.createStatusBarItem(
 		vscode.StatusBarAlignment.Left,
 		100
@@ -68,7 +62,6 @@ export async function activate(context: vscode.ExtensionContext) {
 	statusBarItem.show();
 	context.subscriptions.push(statusBarItem);
 
-	// Register commands
 	context.subscriptions.push(
 		vscode.commands.registerCommand('openRabbit.triggerReview', triggerReview),
 		vscode.commands.registerCommand('openRabbit.showChangesWindow', showChangesPanel),
@@ -76,7 +69,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('openRabbit.openSettings', openSettings)
 	);
 
-	// Restore last review state for this workspace
 	const lastReview = stateManager.getCurrentReview();
 	if (lastReview) {
 		sidebarProvider.updateReview(lastReview);
@@ -85,9 +77,6 @@ export async function activate(context: vscode.ExtensionContext) {
 	console.log('Open Rabbit extension activated successfully!');
 }
 
-/**
- * Handle a new git commit
- */
 async function handleCommit(commit: GitCommit): Promise<void> {
 	const config = vscode.workspace.getConfiguration('openRabbit');
 	const autoReview = config.get<boolean>('autoReviewOnCommit', true);
@@ -113,13 +102,9 @@ async function handleCommit(commit: GitCommit): Promise<void> {
 		}
 	});
 
-	// Auto-trigger review
 	await triggerReview();
 }
 
-/**
- * Trigger a code review
- */
 async function triggerReview(): Promise<void> {
 	const apiClient = getApiClient();
 
@@ -209,9 +194,6 @@ async function triggerReview(): Promise<void> {
 	}
 }
 
-/**
- * Show the changes panel
- */
 function showChangesPanel(review?: ReviewResult): void {
 	const reviewToShow = review || stateManager.getCurrentReview();
 
@@ -233,9 +215,6 @@ function showChangesPanel(review?: ReviewResult): void {
 	});
 }
 
-/**
- * Refresh the current review
- */
 async function refreshReview(): Promise<void> {
 	sidebarProvider.refresh();
 	const currentReview = stateManager.getCurrentReview();
@@ -244,9 +223,6 @@ async function refreshReview(): Promise<void> {
 	}
 }
 
-/**
- * Open extension settings
- */
 function openSettings(): void {
 	vscode.commands.executeCommand(
 		'workbench.action.openSettings',
@@ -254,9 +230,6 @@ function openSettings(): void {
 	);
 }
 
-/**
- * Open a file at a specific line
- */
 async function openFileAtLine(file: string, line: number): Promise<void> {
 	const workspaceFolders = vscode.workspace.workspaceFolders;
 	if (!workspaceFolders) {
@@ -280,9 +253,6 @@ async function openFileAtLine(file: string, line: number): Promise<void> {
 	}
 }
 
-/**
- * Apply a code suggestion
- */
 async function applySuggestion(file: string, line: number, suggestion: string): Promise<void> {
 	if (!suggestion) {
 		return;
@@ -312,9 +282,6 @@ async function applySuggestion(file: string, line: number, suggestion: string): 
 	}
 }
 
-/**
- * Update the status bar
- */
 function updateStatusBar(
 	status: 'idle' | 'running' | 'completed' | 'failed',
 	issueCount?: number

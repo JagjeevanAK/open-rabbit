@@ -18,7 +18,6 @@ export class ChangesPanel {
     private _disposables: vscode.Disposable[] = [];
     private _reviewResult: ReviewResult | null = null;
 
-    // Event emitters
     private _onApplySuggestion = new vscode.EventEmitter<{ file: string; line: number; suggestion: string }>();
     readonly onApplySuggestion = this._onApplySuggestion.event;
 
@@ -63,13 +62,10 @@ export class ChangesPanel {
         );
     }
 
-    /**
-     * Create or show the changes panel
-     */
     public static createOrShow(extensionUri: vscode.Uri, reviewResult?: ReviewResult): ChangesPanel {
         const column = vscode.ViewColumn.Beside;
 
-        // If panel already exists, show it
+        // If panel already exists
         if (ChangesPanel.currentPanel) {
             ChangesPanel.currentPanel._panel.reveal(column);
             if (reviewResult) {
@@ -78,7 +74,6 @@ export class ChangesPanel {
             return ChangesPanel.currentPanel;
         }
 
-        // Create new panel
         const panel = vscode.window.createWebviewPanel(
             ChangesPanel.viewType,
             'Open Rabbit - Changes',
@@ -99,9 +94,6 @@ export class ChangesPanel {
         return ChangesPanel.currentPanel;
     }
 
-    /**
-     * Update the panel with new review data
-     */
     public updateReview(reviewResult: ReviewResult): void {
         this._reviewResult = reviewResult;
         this._update();
@@ -115,7 +107,6 @@ export class ChangesPanel {
         const nonce = this._getNonce();
         const review = this._reviewResult;
 
-        // Group comments by file
         const fileGroups = new Map<string, ReviewComment[]>();
         if (review?.comments) {
             for (const comment of review.comments) {

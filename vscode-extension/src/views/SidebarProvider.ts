@@ -16,7 +16,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     private _currentReview: ReviewResult | null = null;
     private _isLoading: boolean = false;
 
-    // Event emitters for communicating with extension
     private _onTriggerReview = new vscode.EventEmitter<void>();
     readonly onTriggerReview = this._onTriggerReview.event;
 
@@ -47,7 +46,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlContent(webviewView.webview);
 
-        // Handle messages from webview
         webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
             switch (message.command) {
                 case 'triggerReview':
@@ -70,9 +68,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /**
-     * Update the sidebar with new review data
-     */
     updateReview(review: ReviewResult): void {
         this._currentReview = review;
         this._isLoading = false;
@@ -82,9 +77,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /**
-     * Set loading state
-     */
     setLoading(loading: boolean): void {
         this._isLoading = loading;
         this._sendMessage({
@@ -93,9 +85,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /**
-     * Show error message
-     */
     showError(message: string): void {
         this._sendMessage({
             type: 'error',
@@ -103,9 +92,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /**
-     * Update status message
-     */
     updateStatus(status: string): void {
         this._sendMessage({
             type: 'statusUpdate',
@@ -113,9 +99,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /**
-     * Refresh the sidebar view
-     */
     refresh(): void {
         if (this._view) {
             this._view.webview.html = this._getHtmlContent(this._view.webview);

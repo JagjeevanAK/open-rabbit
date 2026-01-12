@@ -1,9 +1,3 @@
-/**
- * API Client for Open Rabbit Backend
- * 
- * Handles communication with the backend code review service.
- */
-
 import * as vscode from 'vscode';
 import {
     ReviewRequest,
@@ -21,8 +15,6 @@ export class ApiClient {
 
     constructor() {
         this.loadConfig();
-
-        // Listen for config changes
         vscode.workspace.onDidChangeConfiguration((e) => {
             if (e.affectsConfiguration('openRabbit')) {
                 this.loadConfig();
@@ -36,24 +28,20 @@ export class ApiClient {
         this.pollingInterval = config.get<number>('pollingInterval', 2000);
     }
 
-    /**
-     * Trigger a code review for local changes
-     */
+    // Trigger a code review for local changes
     async triggerLocalReview(request: LocalReviewRequest): Promise<TaskResponse> {
         const reviewRequest: ReviewRequest = {
             repoUrl: request.repoPath,
             branch: request.branch,
             changedFiles: request.changedFiles.map(f => f.path),
             prDescription: request.commitMessage,
-            autoPost: false, // Local reviews don't post to GitHub
+            autoPost: false,
         };
 
         return this.triggerReview(reviewRequest);
     }
 
-    /**
-     * Trigger a code review via the backend API
-     */
+    // Trigger a code review via the backend API
     async triggerReview(request: ReviewRequest): Promise<TaskResponse> {
         const url = `${this.baseUrl}/feedback/review/pr`;
 
@@ -88,9 +76,7 @@ export class ApiClient {
         }
     }
 
-    /**
-     * Get the status of a review task
-     */
+    // status of a review task
     async getReviewStatus(taskId: string): Promise<TaskStatusResponse> {
         const url = `${this.baseUrl}/feedback/review/status/${taskId}`;
 
@@ -111,9 +97,7 @@ export class ApiClient {
         }
     }
 
-    /**
-     * Get the full result of a completed review
-     */
+    // Get the full result of a completed review
     async getReviewResult(taskId: string): Promise<TaskStatusResponse> {
         const url = `${this.baseUrl}/feedback/review/result/${taskId}`;
 
@@ -134,13 +118,11 @@ export class ApiClient {
         }
     }
 
-    /**
-     * Poll for review completion
-     */
+    // Poll for review completion
     async waitForReviewCompletion(
         taskId: string,
         onProgress?: (status: string) => void,
-        timeoutMs: number = 300000 // 5 minutes default
+        timeoutMs: number = 300000
     ): Promise<ReviewResult> {
         const startTime = Date.now();
 
@@ -159,16 +141,13 @@ export class ApiClient {
                 throw new Error(status.error || 'Review failed');
             }
 
-            // Wait before next poll
             await this.delay(this.pollingInterval);
         }
 
         throw new Error('Review timed out');
     }
 
-    /**
-     * Transform API response to internal ReviewResult format
-     */
+    // Transform API response to internal ReviewResult format
     private transformApiResult(apiResponse: TaskStatusResponse): ReviewResult {
         const result = apiResponse.result;
 
@@ -205,9 +184,7 @@ export class ApiClient {
         };
     }
 
-    /**
-     * Health check for the backend
-     */
+    // Health check 
     async healthCheck(): Promise<boolean> {
         try {
             const response = await fetch(`${this.baseUrl}/health`);
@@ -222,7 +199,6 @@ export class ApiClient {
     }
 }
 
-// Singleton instance
 let apiClientInstance: ApiClient | null = null;
 
 export function getApiClient(): ApiClient {
