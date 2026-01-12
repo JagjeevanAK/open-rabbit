@@ -1,15 +1,14 @@
 import Link from "next/link";
 import {
-  Rabbit,
   GitPullRequest,
   Code2,
   Brain,
   Shield,
-  Zap,
   ChevronRight,
   Github,
   ArrowRight,
   TrendingUp,
+  Settings,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -78,6 +77,11 @@ const features = [
     title: "Multi-Language Support",
     description: "Supports Python, JavaScript, TypeScript with framework-specific insights.",
   },
+  {
+    icon: Settings,
+    title: "Custom Rules",
+    description: "Define your own coding standards and team conventions. Create custom rules to enforce your project's specific requirements.",
+  },
 ];
 
 // How it works steps
@@ -126,9 +130,10 @@ export default function Home() {
             </Link>
             <Link
               href="/signup"
-              className="px-4 py-2 bg-white text-black text-sm font-medium rounded-full hover:bg-white/90 transition-colors"
+              className="group flex items-center justify-center gap-0 px-4 py-2 bg-white text-black text-sm font-medium rounded-full hover:bg-white/90 hover:scale-105 transition-all duration-200"
             >
               Start Free
+              <ArrowRight className="h-4 w-0 opacity-0 group-hover:w-4 group-hover:opacity-100 group-hover:ml-1 transition-all duration-200" />
             </Link>
           </div>
         </nav>
@@ -142,7 +147,7 @@ export default function Home() {
             <Dither
               waveColor={[0.5, 0.5, 0.5]}
               disableAnimation={false}
-              enableMouseInteraction={true}
+              enableMouseInteraction={false}
               mouseRadius={0.3}
               colorNum={4}
               waveAmplitude={0.3}
@@ -176,9 +181,10 @@ export default function Home() {
               <div className="flex items-center justify-center gap-4">
                 <Link
                   href="/signup"
-                  className="px-8 py-3 bg-white text-black font-medium rounded-full hover:bg-white/90 transition-colors"
+                  className="group flex items-center justify-center gap-0 px-8 py-3 bg-white text-black font-medium rounded-full hover:bg-white/90 hover:scale-105 transition-all duration-200"
                 >
                   Get Started
+                  <ArrowRight className="h-5 w-0 opacity-0 group-hover:w-5 group-hover:opacity-100 group-hover:ml-2 transition-all duration-200" />
                 </Link>
                 <Link
                   href="https://github.com/JagjeevanAK/open-rabbit"
@@ -193,15 +199,15 @@ export default function Home() {
 
         {/* Stats Section */}
         <section className="border-y border-border/40 bg-muted/30">
-          <div className="container mx-auto px-4 md:px-8 py-16">
+          <div className="container mx-auto px-12 md:px-24 lg:px-32 py-16">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
               {stats.map((stat, index) => (
                 <div key={index} className="text-center">
-                  <div className="text-3xl md:text-4xl font-bold text-primary mb-1">
+                  <div className="text-4xl md:text-5xl font-bold text-primary mb-2">
                     {stat.value}
                   </div>
-                  <div className="text-sm font-medium mb-1">{stat.label}</div>
-                  <div className="text-xs text-muted-foreground">{stat.description}</div>
+                  <div className="text-base font-medium mb-1">{stat.label}</div>
+                  <div className="text-sm text-muted-foreground">{stat.description}</div>
                 </div>
               ))}
             </div>
@@ -209,7 +215,7 @@ export default function Home() {
         </section>
 
         {/* Features Section */}
-        <section className="container mx-auto px-4 md:px-8 py-24">
+        <section className="container mx-auto px-12 md:px-24 lg:px-32 py-24">
           <div className="text-center mb-16">
             <h2 className="text-3xl md:text-4xl font-bold mb-4">
               Everything you need for better code reviews
@@ -220,56 +226,85 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Bento Grid Layout */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-[180px]">
-            {/* Large card - Learns From Feedback (spans 2 cols, 2 rows) */}
-            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80 md:col-span-2 md:row-span-2">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                <Brain className="h-6 w-6" />
+          {/* Bento Grid - 2 on top, 3 on bottom */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {/* Top Row - 2 Large Cards */}
+            {/* Card 1: Learns From Feedback */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card overflow-hidden transition-all hover:border-primary/50 lg:col-span-1 md:col-span-1">
+              {/* Illustration Area */}
+              <div className="h-48 bg-muted/30 flex items-center justify-center border-b border-border/30">
+                <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                  <Brain className="h-10 w-10" />
+                </div>
               </div>
-              <h3 className="text-xl font-semibold mb-3">{features[0].title}</h3>
-              <p className="text-muted-foreground mb-4">{features[0].description}</p>
-              <div className="flex flex-wrap gap-2">
-                {features[0].highlights?.map((highlight, i) => (
-                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
-                    {highlight}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            {/* Medium card - Automated PR Reviews (spans 2 cols) */}
-            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80 lg:col-span-2">
-              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                <GitPullRequest className="h-5 w-5" />
-              </div>
-              <h3 className="text-lg font-semibold mb-2">{features[1].title}</h3>
-              <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{features[1].description}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {features[1].highlights?.map((highlight, i) => (
-                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                    {highlight}
-                  </span>
-                ))}
+              {/* Content */}
+              <div className="p-6">
+                <h3 className="text-2xl font-semibold mb-2">{features[0].title}</h3>
+                <p className="text-base text-muted-foreground">{features[0].description}</p>
               </div>
             </div>
 
-            {/* Small card - Security Analysis */}
-            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80">
-              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                <Shield className="h-5 w-5" />
+            {/* Card 2: Automated PR Reviews - spans 2 cols on lg */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card overflow-hidden transition-all hover:border-primary/50 lg:col-span-2 md:col-span-1">
+              <div className="flex flex-col lg:flex-row h-full">
+                {/* Illustration Area */}
+                <div className="h-48 lg:h-auto lg:w-1/2 bg-muted/30 flex items-center justify-center border-b lg:border-b-0 lg:border-r border-border/30">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                    <GitPullRequest className="h-10 w-10" />
+                  </div>
+                </div>
+                {/* Content */}
+                <div className="p-6 lg:w-1/2 flex flex-col justify-center">
+                  <h3 className="text-2xl font-semibold mb-2">{features[1].title}</h3>
+                  <p className="text-base text-muted-foreground">{features[1].description}</p>
+                </div>
               </div>
-              <h3 className="text-base font-semibold mb-1">{features[2].title}</h3>
-              <p className="text-xs text-muted-foreground line-clamp-2">{features[2].description}</p>
             </div>
 
-            {/* Small card - Multi-Language Support */}
-            <div className="group relative rounded-2xl border border-border/50 bg-card p-6 transition-all hover:border-primary/50 hover:bg-card/80">
-              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                <Code2 className="h-5 w-5" />
+            {/* Bottom Row - 3 Equal Cards */}
+            {/* Card 3: Security Analysis */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card overflow-hidden transition-all hover:border-primary/50">
+              {/* Illustration Area */}
+              <div className="h-40 bg-muted/30 flex items-center justify-center border-b border-border/30">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                  <Shield className="h-8 w-8" />
+                </div>
               </div>
-              <h3 className="text-base font-semibold mb-1">{features[3].title}</h3>
-              <p className="text-xs text-muted-foreground line-clamp-2">{features[3].description}</p>
+              {/* Content */}
+              <div className="p-6">
+                <h3 className="text-xl font-semibold mb-2">{features[2].title}</h3>
+                <p className="text-base text-muted-foreground">{features[2].description}</p>
+              </div>
+            </div>
+
+            {/* Card 4: Multi-Language Support */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card overflow-hidden transition-all hover:border-primary/50">
+              {/* Illustration Area */}
+              <div className="h-40 bg-muted/30 flex items-center justify-center border-b border-border/30">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                  <Code2 className="h-8 w-8" />
+                </div>
+              </div>
+              {/* Content */}
+              <div className="p-6">
+                <h3 className="text-xl font-semibold mb-2">{features[3].title}</h3>
+                <p className="text-base text-muted-foreground">{features[3].description}</p>
+              </div>
+            </div>
+
+            {/* Card 5: Custom Rules */}
+            <div className="group relative rounded-2xl border border-border/50 bg-card overflow-hidden transition-all hover:border-primary/50">
+              {/* Illustration Area */}
+              <div className="h-40 bg-muted/30 flex items-center justify-center border-b border-border/30">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                  <Settings className="h-8 w-8" />
+                </div>
+              </div>
+              {/* Content */}
+              <div className="p-6">
+                <h3 className="text-xl font-semibold mb-2">{features[4].title}</h3>
+                <p className="text-base text-muted-foreground">{features[4].description}</p>
+              </div>
             </div>
 
           </div>
@@ -277,7 +312,7 @@ export default function Home() {
 
         {/* How It Works Section */}
         <section className="bg-muted/30 border-y border-border/40">
-          <div className="container mx-auto px-4 md:px-8 py-24">
+          <div className="container mx-auto px-12 md:px-24 lg:px-32 py-24">
             <div className="text-center mb-16">
               <h2 className="text-3xl md:text-4xl font-bold mb-4">
                 How Open Rabbit works
@@ -305,7 +340,7 @@ export default function Home() {
         </section>
 
         {/* IDE Section */}
-        <section className="container mx-auto px-4 md:px-8 py-24">
+        <section className="container mx-auto px-12 md:px-24 lg:px-32 py-24">
           <div className="text-center mb-12">
             <Badge variant="secondary" className="mb-4">Coming Soon</Badge>
             <h2 className="text-3xl md:text-4xl font-bold mb-4">
@@ -334,7 +369,7 @@ export default function Home() {
             <div className="absolute bottom-0 left-1/2 -translate-x-1/2 h-[400px] w-[600px] rounded-full bg-primary/20 blur-[128px]" />
           </div>
 
-          <div className="container mx-auto px-4 md:px-8 py-24">
+          <div className="container mx-auto px-12 md:px-24 lg:px-32 py-24">
             <div className="mx-auto max-w-3xl text-center">
               <h2 className="text-3xl md:text-4xl font-bold mb-4">
                 Ready to improve your code reviews?
