@@ -1,6 +1,7 @@
 .cursor
 *__pycache__
 *.env
+*.venv
 temp/
 /temp
 /sample

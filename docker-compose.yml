@@ -1,8 +1,8 @@
 services:
   backend:
     build:
-      context: ./backend
-      dockerfile: ../docker/backend.Dockerfile
+      context: .
+      dockerfile: docker/backend.Dockerfile
     container_name: open-rabbit-backend
     restart: unless-stopped
     env_file:
@@ -11,6 +11,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - ./agent:/app/agent
     depends_on:
       postgres:
         condition: service_healthy
@@ -20,6 +21,7 @@ services:
         condition: service_healthy
     networks:
       - open-rabbit-network
+
 
   bot:
     build:

@@ -9,14 +9,16 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock ./
+COPY agent /app/agent
 
+COPY backend/pyproject.toml backend/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
-COPY . .
+COPY backend/ .
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
