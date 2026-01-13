@@ -4,17 +4,17 @@ version = "0.1.0"
 description = "Open Rabbit Backend API Server"
 readme = "README.md"
 requires-python = ">=3.13"
+authors = [
+    { name = "Jagjeevan Kashid", email = "jagjeevandev97@gmail.com" }
+]
 dependencies = [
-    # Local agent package
     "open-rabbit-agent",
-    # Backend-specific dependencies
     "alembic>=1.16.5",
     "dotenv>=0.9.9",
     "fastapi>=0.118.0",
     "psycopg2-binary>=2.9.10",
     "sqlalchemy>=2.0.43",
     "uvicorn>=0.37.0",
-    # OpenTelemetry (backend-specific observability)
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
