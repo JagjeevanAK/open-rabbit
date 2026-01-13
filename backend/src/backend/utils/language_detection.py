@@ -1,11 +1,4 @@
-"""
-Language Detection Utility.
 
-Provides file extension to programming language mapping.
-"""
-
-
-# Map file extensions to programming languages
 EXTENSION_TO_LANGUAGE = {
     ".py": "python",
     ".js": "javascript",

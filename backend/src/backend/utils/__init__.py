@@ -1,4 +1,3 @@
-"""Utils package - Shared utility functions."""
 from backend.utils.language_detection import (
     detect_language,
     is_code_file,
