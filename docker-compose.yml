@@ -38,6 +38,41 @@ services:
     networks:
       - open-rabbit-network
 
+  knowledge-base:
+    build:
+      context: .
+      dockerfile: docker/knowledge-base.Dockerfile
+    container_name: open-rabbit-knowledge-base
+    restart: unless-stopped
+    env_file:
+      - ./knowledge-base/.env
+    ports:
+      - "8001:8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - open-rabbit-network
+
+  knowledge-base-worker:
+    build:
+      context: .
+      dockerfile: docker/knowledge-base.Dockerfile
+    container_name: open-rabbit-knowledge-base-worker
+    restart: unless-stopped
+    env_file:
+      - ./knowledge-base/.env
+    command: ["uv", "run", "celery", "-A", "knowledge_base.celery_app", "worker", "--loglevel=info"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - open-rabbit-network
+
   postgres:
     image: postgres:16-alpine
     container_name: open-rabbit-postgres
